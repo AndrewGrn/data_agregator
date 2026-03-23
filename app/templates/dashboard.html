@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="stats">
+  <div class="card"><h3>Цілі</h3><strong>{{ targets|length }}</strong></div>
+  <div class="card"><h3>Акаунти</h3><strong>{{ accounts|length }}</strong></div>
+  <div class="card"><h3>Raw Події</h3><strong>{{ events_count }}</strong></div>
+</section>
+
+<section class="actions card">
+  <h2>Керування</h2>
+  <div class="buttons">
+    <form method="post" action="/scheduler/run"><button type="submit">Запустити планувальник один раз</button></form>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Останні завдання</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Парсер</th>
+        <th>Ціль</th>
+        <th>Акаунт</th>
+        <th>Статус</th>
+        <th>Спроба</th>
+        <th>Ключ</th>
+        <th>Помилка</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+      <tr>
+        <td>{{ job.id }}</td>
+        <td>{{ job.parser_type.value }}</td>
+        <td>{{ job.target_id }}</td>
+        <td>{{ job.account_id or '-' }}</td>
+        <td><span class="badge {{ job.status.value }}">{{ job.status.value }}</span></td>
+        <td>{{ job.attempt }}</td>
+        <td>{{ job.job_key or '-' }}</td>
+        <td>{{ job.last_error or '-' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

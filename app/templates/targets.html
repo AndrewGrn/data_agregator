@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="grid-2">
+  <article class="card">
+    <h2>Додати ціль</h2>
+    <form method="post" action="/targets">
+      <label>Тип парсера</label>
+      <select name="parser_type">
+        <option value="telegram">telegram</option>
+        <option value="darknet">darknet</option>
+      </select>
+      <label>Назва</label>
+      <input name="name" required />
+      <label>Ідентифікатор</label>
+      <input name="identifier" required placeholder="@channel | chat_id | http://...onion" />
+      <label>Ліміт повідомлень (telegram)</label>
+      <input name="limit" type="number" value="200" min="1" />
+
+      <h3>Backfill</h3>
+      <label><input type="checkbox" name="backfill_enabled" /> Увімкнути backfill</label>
+      <label>Початок (ISO datetime)</label>
+      <input name="backfill_from" placeholder="2025-01-01T00:00:00+00:00" />
+      <label>Кінець (ISO datetime)</label>
+      <input name="backfill_to" placeholder="2025-03-01T00:00:00+00:00" />
+      <label>Розмір чанку (дні)</label>
+      <input name="backfill_chunk_days" type="number" value="7" min="1" />
+      <label>Ліміт повідомлень на backfill-job</label>
+      <input name="backfill_limit" type="number" value="5000" min="1" />
+
+      <button type="submit">Створити ціль</button>
+    </form>
+  </article>
+
+  <article class="card">
+    <h2>Додати акаунт</h2>
+    <form method="post" action="/accounts">
+      <label>Тип парсера</label>
+      <select name="parser_type">
+        <option value="telegram">telegram</option>
+        <option value="darknet">darknet</option>
+      </select>
+      <label>Мітка</label>
+      <input name="label" required />
+      <label>Ліміт job/год (rate-limit)</label>
+      <input name="hourly_limit" type="number" value="120" min="1" />
+      <label>Telegram API ID</label>
+      <input name="api_id" placeholder="тільки для telegram" />
+      <label>Telegram API Hash</label>
+      <input name="api_hash" placeholder="тільки для telegram" />
+      <label>Telegram Session String</label>
+      <textarea name="session_string" rows="3" placeholder="тільки для telegram"></textarea>
+      <button type="submit">Створити акаунт</button>
+    </form>
+  </article>
+</section>
+
+<section class="card">
+  <h2>Прив’язати акаунт до цілі</h2>
+  <form method="post" action="/links" class="inline">
+    <label>Ціль</label>
+    <select name="target_id">
+      {% for t in targets %}
+      <option value="{{ t.id }}">{{ t.id }} | {{ t.name }} | {{ t.parser_type.value }}</option>
+      {% endfor %}
+    </select>
+    <label>Акаунт</label>
+    <select name="account_id">
+      {% for a in accounts %}
+      <option value="{{ a.id }}">{{ a.id }} | {{ a.label }} | {{ a.parser_type.value }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Прив’язати</button>
+  </form>
+  <form method="post" action="/telegram/sync-memberships" class="inline top-space">
+    <button type="submit">Автосинхронізація доступу Telegram</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Цілі</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Парсер</th>
+        <th>Назва</th>
+        <th>Ідентифікатор</th>
+        <th>Статус onboarding</th>
+        <th>Конфіг</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in targets %}
+      <tr>
+        <td>{{ t.id }}</td>
+        <td>{{ t.parser_type.value }}</td>
+        <td>{{ t.name }}</td>
+        <td>{{ t.identifier }}</td>
+        <td>{{ t.onboarding_status.value }}</td>
+        <td>{{ t.config }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>Telegram акаунти: health/rate-limit</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Мітка</th>
+        <th>Health</th>
+        <th>Ліміт/год</th>
+        <th>Лічильник вікна</th>
+        <th>Cooldown до</th>
+        <th>Успіхи</th>
+        <th>Помилки</th>
+        <th>Остання помилка</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in accounts %}
+      <tr>
+        <td>{{ a.id }}</td>
+        <td>{{ a.label }}</td>
+        <td>{{ '%.1f'|format(a.health_score) }}</td>
+        <td>{{ a.hourly_limit }}</td>
+        <td>{{ a.hour_window_count }}</td>
+        <td>{{ a.cooldown_until or '-' }}</td>
+        <td>{{ a.success_count }}</td>
+        <td>{{ a.fail_count }}</td>
+        <td>{{ a.last_error or '-' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>Зв’язки ціль ↔ акаунт</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>ID цілі</th>
+        <th>ID акаунта</th>
+        <th>Активний</th>
+        <th>Auto</th>
+        <th>Остання перевірка</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for l in links %}
+      <tr>
+        <td>{{ l.target_id }}</td>
+        <td>{{ l.account_id }}</td>
+        <td>{{ l.is_active }}</td>
+        <td>{{ l.auto_detected }}</td>
+        <td>{{ l.last_checked_at or '-' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

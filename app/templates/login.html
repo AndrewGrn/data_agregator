@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="uk">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Вхід</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="centered">
+      <section class="card login">
+        <h1>Агрегатор Даних</h1>
+        <p>Увійдіть під локальним користувачем</p>
+        <form method="post" action="/auth/login">
+          <label>Користувач</label>
+          <input type="text" name="username" required />
+          <label>Пароль</label>
+          <input type="password" name="password" required />
+          <button type="submit">Увійти</button>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

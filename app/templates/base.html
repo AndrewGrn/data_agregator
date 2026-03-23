@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="uk">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title or "Агрегатор Даних" }}</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">Агрегатор Даних</div>
+      <nav>
+        <a href="/">Панель</a>
+        <a href="/targets">Цілі та Акаунти</a>
+      </nav>
+      <form method="post" action="/auth/logout">
+        <button class="danger" type="submit">Вийти</button>
+      </form>
+    </header>
+    <main class="container">{% block content %}{% endblock %}</main>
+  </body>
+</html>

@@ -1,0 +1,112 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: aggregator
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  torproxy:
+    image: dperson/torproxy:latest
+    ports:
+      - "9050:9050"
+
+  minio:
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: miniosecret
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  api:
+    build: .
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - torproxy
+      - minio
+    ports:
+      - "8000:8000"
+    command: sh -c "python -m app.cli db-upgrade && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    develop:
+      watch:
+        - action: sync+restart
+          path: .
+          target: /app
+          ignore:
+            - .git/
+            - .venv/
+            - __pycache__/
+            - .pytest_cache/
+            - data_aggregator.db
+            - .env
+        - action: rebuild
+          path: requirements.txt
+        - action: rebuild
+          path: Dockerfile
+
+  scheduler:
+    build: .
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - torproxy
+      - minio
+    command: sh -c "python -m app.cli db-upgrade && python -m app.cli run-scheduler --loop"
+    develop:
+      watch:
+        - action: sync+restart
+          path: .
+          target: /app
+          ignore:
+            - .git/
+            - .venv/
+            - __pycache__/
+            - .pytest_cache/
+            - data_aggregator.db
+            - .env
+        - action: rebuild
+          path: requirements.txt
+        - action: rebuild
+          path: Dockerfile
+
+  worker:
+    build: .
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - torproxy
+      - minio
+    command: sh -c "python -m app.cli db-upgrade && python -m app.cli run-worker --concurrency 4"
+    develop:
+      watch:
+        - action: sync+restart
+          path: .
+          target: /app
+          ignore:
+            - .git/
+            - .venv/
+            - __pycache__/
+            - .pytest_cache/
+            - data_aggregator.db
+            - .env
+        - action: rebuild
+          path: requirements.txt
+        - action: rebuild
+          path: Dockerfile
+
+volumes:
+  pgdata:
+  minio_data:

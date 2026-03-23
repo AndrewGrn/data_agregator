@@ -1,0 +1,83 @@
+:root {
+  --bg: #0f1117;
+  --panel: #171a23;
+  --panel-2: #1f2430;
+  --text: #f2f4f8;
+  --muted: #a8b0c0;
+  --ok: #2ea44f;
+  --warn: #f1c40f;
+  --err: #e74c3c;
+  --accent: #3b82f6;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  background: radial-gradient(circle at top right, #1d2335 0%, var(--bg) 55%);
+  color: var(--text);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 24px;
+  border-bottom: 1px solid #2e3446;
+  background: rgba(15, 17, 23, 0.85);
+  backdrop-filter: blur(8px);
+}
+
+.topbar .brand { font-weight: 700; }
+.topbar nav { display: flex; gap: 12px; }
+.topbar a { color: var(--text); text-decoration: none; opacity: 0.9; }
+
+.container { max-width: 1180px; margin: 24px auto; padding: 0 16px; display: grid; gap: 16px; }
+.card {
+  background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+  border: 1px solid #2f364a;
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+
+form { display: grid; gap: 8px; }
+.inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.top-space { margin-top: 10px; }
+
+input, select, textarea, button {
+  border-radius: 8px;
+  border: 1px solid #3b4258;
+  background: #10131c;
+  color: var(--text);
+  padding: 10px;
+}
+
+button {
+  cursor: pointer;
+  background: linear-gradient(180deg, #2673ff 0%, #1d5ecf 100%);
+  border: none;
+  font-weight: 600;
+}
+button.danger {
+  background: linear-gradient(180deg, #f05d5d 0%, #c73e3e 100%);
+}
+
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; border-bottom: 1px solid #31384d; padding: 8px; vertical-align: top; }
+
+.badge { padding: 2px 8px; border-radius: 999px; font-size: 12px; }
+.badge.succeeded { background: rgba(46, 164, 79, 0.2); color: #8df5ac; }
+.badge.running { background: rgba(59, 130, 246, 0.2); color: #9fc2ff; }
+.badge.pending, .badge.retry { background: rgba(241, 196, 15, 0.2); color: #ffdf79; }
+.badge.failed { background: rgba(231, 76, 60, 0.2); color: #ff9b90; }
+
+.centered { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
+.login { width: min(440px, 100%); }
+
+@media (max-width: 900px) {
+  .stats, .grid-2 { grid-template-columns: 1fr; }
+}
