@@ -1,47 +1,35 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="stats">
-  <div class="card"><h3>Цілі</h3><strong>{{ targets|length }}</strong></div>
-  <div class="card"><h3>Акаунти</h3><strong>{{ accounts|length }}</strong></div>
-  <div class="card"><h3>Raw Події</h3><strong>{{ events_count }}</strong></div>
-</section>
-
-<section class="actions card">
-  <h2>Керування</h2>
-  <div class="buttons">
-    <form method="post" action="/scheduler/run"><button type="submit">Запустити планувальник один раз</button></form>
-  </div>
-</section>
-
 <section class="card">
-  <h2>Останні завдання</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>ID</th>
-        <th>Парсер</th>
-        <th>Ціль</th>
-        <th>Акаунт</th>
-        <th>Статус</th>
-        <th>Спроба</th>
-        <th>Ключ</th>
-        <th>Помилка</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for job in jobs %}
-      <tr>
-        <td>{{ job.id }}</td>
-        <td>{{ job.parser_type.value }}</td>
-        <td>{{ job.target_id }}</td>
-        <td>{{ job.account_id or '-' }}</td>
-        <td><span class="badge {{ job.status.value }}">{{ job.status.value }}</span></td>
-        <td>{{ job.attempt }}</td>
-        <td>{{ job.job_key or '-' }}</td>
-        <td>{{ job.last_error or '-' }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <h2>Модулі Парсингу</h2>
+  <div class="modules-grid">
+    {% for module in module_cards %}
+    <article class="module-card">
+      <header class="module-head">
+        <div>
+          <h3>{{ module.title }}</h3>
+          <p>{{ module.description }}</p>
+        </div>
+        <span class="module-status {{ module.status_tone }}">{{ module.status }}</span>
+      </header>
+
+      <div class="module-metrics">
+        <div><span>Цілі</span><strong>{{ module.targets }}</strong></div>
+        <div><span>Акаунти</span><strong>{{ module.accounts }}</strong></div>
+        <div><span>Збережено подій</span><strong>{{ module.raw_events }}</strong></div>
+        <div><span>В черзі</span><strong>{{ module.pending_jobs }}</strong></div>
+        <div><span>В роботі</span><strong>{{ module.running_jobs }}</strong></div>
+        <div><span>Помилки</span><strong>{{ module.failed_jobs }}</strong></div>
+      </div>
+
+      <div class="module-footer">
+        <p>Остання подія: {{ module.last_event_at or "-" }}</p>
+        <div class="module-actions">
+          <a class="btn-link" href="/modules/{{ module.parser_type }}">Відкрити модуль</a>
+        </div>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
 </section>
 {% endblock %}

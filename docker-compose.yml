@@ -1,4 +1,26 @@
 services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    depends_on:
+      - api
+    ports:
+      - "5173:5173"
+    command: sh -c "npm run dev -- --host 0.0.0.0 --port 5173"
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./frontend
+          target: /frontend
+          ignore:
+            - node_modules/
+            - dist/
+        - action: rebuild
+          path: ./frontend/package.json
+        - action: rebuild
+          path: ./frontend/Dockerfile
+
   db:
     image: postgres:16
     environment:
@@ -90,6 +112,32 @@ services:
       - torproxy
       - minio
     command: sh -c "python -m app.cli db-upgrade && python -m app.cli run-worker --concurrency 4"
+    develop:
+      watch:
+        - action: sync+restart
+          path: .
+          target: /app
+          ignore:
+            - .git/
+            - .venv/
+            - __pycache__/
+            - .pytest_cache/
+            - data_aggregator.db
+            - .env
+        - action: rebuild
+          path: requirements.txt
+        - action: rebuild
+          path: Dockerfile
+
+  telegram-listener:
+    build: .
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - torproxy
+      - minio
+    command: sh -c "python -m app.cli db-upgrade && python -m app.cli run-telegram-listener"
     develop:
       watch:
         - action: sync+restart

@@ -15,6 +15,7 @@ class JobSpec:
     account_id: int | None
     job_key: str | None
     payload: dict
+    priority: int = 100
 
 
 @dataclass(slots=True)

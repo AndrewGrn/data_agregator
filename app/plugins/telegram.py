@@ -10,8 +10,9 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 from app.config import get_settings
-from app.models import OnboardingStatus, ParseJob, ParserAccount, ParserType, Target, TargetAccountLink
+from app.models import OnboardingStatus, ParseJob, ParserAccount, ParserType, Target, TargetAccountLink, TelegramOffset
 from app.plugins.base import JobSpec, ParsedEvent, ParserPlugin
+from app.services.telegram_offsets import update_gapfill_state
 
 settings = get_settings()
 
@@ -25,12 +26,22 @@ def _coerce_utc(value: dt.datetime) -> dt.datetime:
 def _parse_iso_datetime(value: str | None) -> dt.datetime | None:
     if not value:
         return None
-    parsed = dt.datetime.fromisoformat(value)
+    normalized = str(value).strip()
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+    parsed = dt.datetime.fromisoformat(normalized)
     return _coerce_utc(parsed)
 
 
 class TelegramPlugin(ParserPlugin):
     parser_type = ParserType.telegram.value
+
+    def _backfill_mode(self, target: Target) -> str:
+        backfill = dict((target.config or {}).get("backfill") or {})
+        mode = str(backfill.get("mode") or "range").strip().lower()
+        if mode not in {"range", "full"}:
+            return "range"
+        return mode
 
     def _is_account_available(self, account: ParserAccount, now: dt.datetime) -> bool:
         if account.cooldown_until and account.cooldown_until > now:
@@ -48,6 +59,8 @@ class TelegramPlugin(ParserPlugin):
         backfill = config.get("backfill", {})
         if not backfill.get("enabled"):
             return []
+        if self._backfill_mode(target) != "range":
+            return []
 
         start = _parse_iso_datetime(backfill.get("from"))
         end = _parse_iso_datetime(backfill.get("to"))
@@ -64,6 +77,41 @@ class TelegramPlugin(ParserPlugin):
             ranges.append((cursor, upper))
             cursor = upper
         return ranges
+
+    def _full_backfill_state(self, target: Target, account_id: int) -> dict:
+        config = dict(target.config or {})
+        backfill = dict(config.get("backfill") or {})
+        progress = dict(backfill.get("full_progress") or {})
+        state = dict(progress.get(str(account_id)) or {})
+        return state
+
+    def _update_full_backfill_state(
+        self,
+        target: Target,
+        account_id: int,
+        requested_limit: int,
+        fetched_root_count: int,
+        oldest_root_message_id: int | None,
+    ) -> None:
+        config = dict(target.config or {})
+        backfill = dict(config.get("backfill") or {})
+        progress = dict(backfill.get("full_progress") or {})
+        state = dict(progress.get(str(account_id)) or {})
+
+        done = fetched_root_count <= 0 or oldest_root_message_id is None or fetched_root_count < max(int(requested_limit), 1)
+        state["done"] = bool(done)
+        state["last_batch_count"] = int(max(fetched_root_count, 0))
+        state["last_oldest_message_id"] = int(oldest_root_message_id) if oldest_root_message_id else None
+        state["updated_at"] = dt.datetime.now(dt.UTC).isoformat()
+        if done:
+            state["next_offset_id"] = None
+        else:
+            state["next_offset_id"] = int(oldest_root_message_id)
+
+        progress[str(account_id)] = state
+        backfill["full_progress"] = progress
+        config["backfill"] = backfill
+        target.config = config
 
     def generate_jobs(self, session: Session, target: Target) -> list[JobSpec]:
         rows = session.execute(
@@ -91,34 +139,132 @@ class TelegramPlugin(ParserPlugin):
 
         target.onboarding_status = OnboardingStatus.ready
         jobs: list[JobSpec] = []
+        config = dict(target.config or {})
+        poll_interval_seconds = max(int(config.get("poll_interval_seconds", 300)), 30)
+        participants_sync_enabled = bool(config.get("participants_sync_enabled", True))
+        participants_sync_interval_seconds = max(int(config.get("participants_sync_interval_seconds", 3600)), 300)
+        participants_limit = max(int(config.get("participants_limit", 1000)), 1)
+        live_enabled = bool(config.get("live_enabled", True))
+        gapfill_limit = max(int(config.get("gapfill_limit", config.get("limit", settings.telegram_fetch_limit))), 1)
+        backfill_mode = self._backfill_mode(target)
+        backfill_enabled = bool((config.get("backfill") or {}).get("enabled"))
+        account_ids = [account.id for account in accounts]
+        offsets_by_account: dict[int, TelegramOffset] = {}
+        if account_ids:
+            offsets = (
+                session.execute(
+                    select(TelegramOffset).where(
+                        TelegramOffset.target_id == target.id,
+                        TelegramOffset.account_id.in_(account_ids),
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            offsets_by_account = {int(offset.account_id): offset for offset in offsets}
 
         for account in accounts:
-            jobs.append(
-                JobSpec(
-                    parser_type=self.parser_type,
-                    target_id=target.id,
-                    account_id=account.id,
-                    job_key=f"poll:{target.id}:{account.id}",
-                    payload={"identifier": target.identifier, "limit": target.config.get("limit", settings.telegram_fetch_limit)},
-                )
-            )
+            full_backfill_active = False
+            full_backfill_state: dict[str, Any] = {}
+            if backfill_enabled and backfill_mode == "full":
+                full_backfill_state = self._full_backfill_state(target, account.id)
+                full_backfill_active = not bool(full_backfill_state.get("done"))
 
-            for from_date, to_date in self._build_backfill_ranges(target):
+            if full_backfill_active:
+                next_offset_id = int(full_backfill_state.get("next_offset_id") or 0)
+                full_batch_size = max(int(target.config.get("backfill_full_batch_size", 300)), 1)
+                configured_limit = max(int(target.config.get("backfill_limit", 5000)), 1)
+                effective_limit = min(configured_limit, full_batch_size)
                 jobs.append(
                     JobSpec(
                         parser_type=self.parser_type,
                         target_id=target.id,
                         account_id=account.id,
-                        job_key=f"backfill:{target.id}:{account.id}:{from_date.isoformat()}:{to_date.isoformat()}",
+                        job_key=f"backfill-full:{target.id}:{account.id}:{next_offset_id}",
                         payload={
                             "identifier": target.identifier,
-                            "limit": int(target.config.get("backfill_limit", 5000)),
+                            "limit": effective_limit,
                             "backfill": True,
-                            "from_date": from_date.isoformat(),
-                            "to_date": to_date.isoformat(),
+                            "backfill_mode": "full",
+                            "offset_id": next_offset_id,
                         },
+                        priority=240,
                     )
                 )
+                # During full backfill we intentionally do not run poll/participants for the same account.
+                continue
+
+            if live_enabled:
+                offset_row = offsets_by_account.get(account.id)
+                min_id = int(offset_row.max_message_id) if offset_row else 0
+                jobs.append(
+                    JobSpec(
+                        parser_type=self.parser_type,
+                        target_id=target.id,
+                        account_id=account.id,
+                        job_key=f"gapfill:{target.id}:{account.id}",
+                        payload={
+                            "mode": "gap_fill",
+                            "identifier": target.identifier,
+                            "limit": gapfill_limit,
+                            "min_id": min_id,
+                            "min_interval_seconds": poll_interval_seconds,
+                        },
+                        priority=80,
+                    )
+                )
+            else:
+                jobs.append(
+                    JobSpec(
+                        parser_type=self.parser_type,
+                        target_id=target.id,
+                        account_id=account.id,
+                        job_key=f"poll:{target.id}:{account.id}",
+                        payload={
+                            "identifier": target.identifier,
+                            "limit": config.get("limit", settings.telegram_fetch_limit),
+                            "min_interval_seconds": poll_interval_seconds,
+                        },
+                        priority=140,
+                    )
+                )
+
+            if participants_sync_enabled:
+                jobs.append(
+                    JobSpec(
+                        parser_type=self.parser_type,
+                        target_id=target.id,
+                        account_id=account.id,
+                        job_key=f"participants:{target.id}:{account.id}",
+                        payload={
+                            "mode": "participants_sync",
+                            "identifier": target.identifier,
+                            "participants_limit": participants_limit,
+                            "min_interval_seconds": participants_sync_interval_seconds,
+                        },
+                        priority=220,
+                    )
+                )
+
+            if not (backfill_enabled and backfill_mode == "full"):
+                for from_date, to_date in self._build_backfill_ranges(target):
+                    jobs.append(
+                        JobSpec(
+                            parser_type=self.parser_type,
+                            target_id=target.id,
+                            account_id=account.id,
+                            job_key=f"backfill:{target.id}:{account.id}:{from_date.isoformat()}:{to_date.isoformat()}",
+                            payload={
+                                "identifier": target.identifier,
+                                "limit": int(target.config.get("backfill_limit", 5000)),
+                                "backfill": True,
+                                "backfill_mode": "range",
+                                "from_date": from_date.isoformat(),
+                                "to_date": to_date.isoformat(),
+                            },
+                            priority=260,
+                        )
+                    )
 
         return jobs
 
@@ -129,7 +275,13 @@ class TelegramPlugin(ParserPlugin):
         limit: int,
         from_date: dt.datetime | None = None,
         to_date: dt.datetime | None = None,
-    ) -> list[dict[str, Any]]:
+        min_id: int = 0,
+        offset_id: int = 0,
+        comments_enabled: bool = False,
+        comments_limit: int = 50,
+        comments_depth: int = 2,
+        comments_recheck_posts: int = 100,
+    ) -> tuple[list[dict[str, Any]], int, int | None]:
         creds = account.credentials or {}
         api_id = creds.get("api_id")
         api_hash = creds.get("api_hash")
@@ -143,61 +295,305 @@ class TelegramPlugin(ParserPlugin):
 
         client = TelegramClient(StringSession(session_string), int(api_id), str(api_hash))
         await client.connect()
+        try:
+            if not await client.is_user_authorized():
+                raise ValueError(f"Telegram account '{account.label}' is not authorized.")
+
+            messages: list[dict[str, Any]] = []
+            root_post_ids: list[int] = []
+            root_count = 0
+            oldest_root_message_id: int | None = None
+            root_comments_sample_count = max(int(comments_recheck_posts), 1)
+            iter_kwargs: dict[str, Any] = {"limit": limit}
+            if to_date:
+                iter_kwargs["offset_date"] = to_date + dt.timedelta(seconds=1)
+            if min_id > 0:
+                iter_kwargs["min_id"] = int(min_id)
+            if offset_id > 0:
+                iter_kwargs["offset_id"] = int(offset_id)
+
+            async for msg in client.iter_messages(identifier, **iter_kwargs):
+                msg_date = _coerce_utc(msg.date) if msg.date else None
+                if from_date and msg_date and msg_date < from_date:
+                    break
+                if to_date and msg_date and msg_date > to_date:
+                    continue
+
+                sender = await msg.get_sender()
+                chat_id = (
+                    getattr(msg.peer_id, "channel_id", None)
+                    or getattr(msg.peer_id, "chat_id", None)
+                    or getattr(msg.peer_id, "user_id", None)
+                )
+                root_count += 1
+                msg_id = int(msg.id)
+                if oldest_root_message_id is None or msg_id < oldest_root_message_id:
+                    oldest_root_message_id = msg_id
+                messages.append(
+                    {
+                        "event_type": "telegram_message",
+                        "message_id": msg_id,
+                        "date": msg.date.isoformat() if msg.date else None,
+                        "text": msg.message,
+                        "chat_id": chat_id,
+                        "sender": {
+                            "id": getattr(sender, "id", None),
+                            "username": getattr(sender, "username", None),
+                            "first_name": getattr(sender, "first_name", None),
+                            "last_name": getattr(sender, "last_name", None),
+                        },
+                        "raw": msg.to_dict(),
+                    }
+                )
+                if len(root_post_ids) < root_comments_sample_count:
+                    root_post_ids.append(msg_id)
+
+            if comments_enabled:
+                recheck_limit = max(int(comments_recheck_posts), 1)
+                known_root_ids = set(root_post_ids)
+                if recheck_limit > len(root_post_ids):
+                    async for root_msg in client.iter_messages(identifier, limit=recheck_limit):
+                        known_root_ids.add(int(root_msg.id))
+
+                queue: list[tuple[int, int, int | None]] = [(root_id, 0, None) for root_id in known_root_ids]
+                visited: set[tuple[int, int]] = set()
+                while queue:
+                    parent_id, depth, root_id = queue.pop(0)
+                    root_post_id = root_id if root_id is not None else parent_id
+                    if (parent_id, depth) in visited:
+                        continue
+                    visited.add((parent_id, depth))
+
+                    try:
+                        comments = []
+                        async for cmt in client.iter_messages(identifier, reply_to=parent_id, limit=max(int(comments_limit), 1)):
+                            comments.append(cmt)
+                    except Exception:
+                        continue
+
+                    for cmt in comments:
+                        sender = await cmt.get_sender()
+                        cmt_chat_id = (
+                            getattr(cmt.peer_id, "channel_id", None)
+                            or getattr(cmt.peer_id, "chat_id", None)
+                            or getattr(cmt.peer_id, "user_id", None)
+                        )
+                        messages.append(
+                            {
+                                "event_type": "telegram_comment",
+                                "message_id": cmt.id,
+                                "root_post_id": root_post_id,
+                                "parent_message_id": parent_id,
+                                "depth": depth + 1,
+                                "date": cmt.date.isoformat() if cmt.date else None,
+                                "text": cmt.message,
+                                "chat_id": cmt_chat_id,
+                                "sender": {
+                                    "id": getattr(sender, "id", None),
+                                    "username": getattr(sender, "username", None),
+                                    "first_name": getattr(sender, "first_name", None),
+                                    "last_name": getattr(sender, "last_name", None),
+                                },
+                                "raw": cmt.to_dict(),
+                            }
+                        )
+
+                        if (depth + 1) < max(int(comments_depth), 1):
+                            queue.append((int(cmt.id), depth + 1, root_post_id))
+
+            return messages, root_count, oldest_root_message_id
+        finally:
+            await client.disconnect()
+
+    def _participant_status(self, participant_obj) -> tuple[str, bool, dt.datetime | None]:
+        if participant_obj is None:
+            return "participant_member", True, None
+
+        class_name = participant_obj.__class__.__name__.lower()
+        joined_at_raw = getattr(participant_obj, "date", None)
+        joined_at = _coerce_utc(joined_at_raw) if joined_at_raw else None
+
+        if "creator" in class_name:
+            return "participant_creator", True, joined_at
+        if "admin" in class_name:
+            return "participant_admin", True, joined_at
+        if "banned" in class_name:
+            return "participant_banned", False, joined_at
+        if "left" in class_name:
+            return "participant_left", False, joined_at
+        if "restricted" in class_name:
+            left_flag = bool(getattr(participant_obj, "left", False))
+            return "participant_restricted", not left_flag, joined_at
+        return "participant_member", True, joined_at
+
+    async def _fetch_participants(self, account: ParserAccount, identifier: str, limit: int) -> list[dict[str, Any]]:
+        creds = account.credentials or {}
+        api_id = creds.get("api_id")
+        api_hash = creds.get("api_hash")
+        session_string = creds.get("session_string")
+
+        if not (api_id and api_hash and session_string):
+            return []
+
+        client = TelegramClient(StringSession(session_string), int(api_id), str(api_hash))
+        await client.connect()
         if not await client.is_user_authorized():
             await client.disconnect()
-            raise ValueError(f"Telegram account '{account.label}' is not authorized.")
+            return []
 
-        messages: list[dict[str, Any]] = []
-        iter_kwargs: dict[str, Any] = {"limit": limit}
-        if to_date:
-            iter_kwargs["offset_date"] = to_date + dt.timedelta(seconds=1)
+        payloads: list[dict[str, Any]] = []
+        observed_at = dt.datetime.now(dt.UTC)
 
-        async for msg in client.iter_messages(identifier, **iter_kwargs):
-            msg_date = _coerce_utc(msg.date) if msg.date else None
-            if from_date and msg_date and msg_date < from_date:
-                break
-            if to_date and msg_date and msg_date > to_date:
-                continue
+        try:
+            entity = await client.get_entity(identifier)
+            entity_id = getattr(entity, "id", None)
+            chat_id = int(entity_id) if entity_id is not None else None
+            if chat_id and chat_id > 0 and (getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False)):
+                chat_id = -1000000000000 + chat_id
 
-            sender = await msg.get_sender()
-            messages.append(
-                {
-                    "message_id": msg.id,
-                    "date": msg.date.isoformat() if msg.date else None,
-                    "text": msg.message,
-                    "chat_id": getattr(msg.peer_id, "channel_id", None)
-                    or getattr(msg.peer_id, "chat_id", None)
-                    or getattr(msg.peer_id, "user_id", None),
-                    "sender": {
-                        "id": getattr(sender, "id", None),
-                        "username": getattr(sender, "username", None),
-                        "first_name": getattr(sender, "first_name", None),
-                        "last_name": getattr(sender, "last_name", None),
-                    },
-                    "raw": msg.to_dict(),
-                }
-            )
+            async for participant in client.iter_participants(entity, limit=max(int(limit), 1)):
+                membership_obj = getattr(participant, "participant", None)
+                membership_status, membership_is_active, joined_at = self._participant_status(membership_obj)
+                payloads.append(
+                    {
+                        "event_type": "telegram_participant",
+                        "date": observed_at.isoformat(),
+                        "chat_id": chat_id,
+                        "identifier": identifier,
+                        "membership_status": membership_status,
+                        "membership_is_active": membership_is_active,
+                        "joined_at": joined_at.isoformat() if joined_at else None,
+                        "sender": {
+                            "id": getattr(participant, "id", None),
+                            "username": getattr(participant, "username", None),
+                            "first_name": getattr(participant, "first_name", None),
+                            "last_name": getattr(participant, "last_name", None),
+                            "phone": getattr(participant, "phone", None),
+                            "is_bot": bool(getattr(participant, "bot", False)),
+                            "is_verified": bool(getattr(participant, "verified", False)),
+                            "is_scam": bool(getattr(participant, "scam", False)),
+                            "is_fake": bool(getattr(participant, "fake", False)),
+                            "is_deleted": bool(getattr(participant, "deleted", False)),
+                        },
+                        "raw": participant.to_dict(),
+                    }
+                )
+        except Exception:
+            payloads = []
+        finally:
+            await client.disconnect()
 
-        await client.disconnect()
-        return messages
+        return payloads
 
     def run(self, session: Session, job: ParseJob, target: Target, account: ParserAccount | None) -> list[ParsedEvent]:
         if not account:
             raise ValueError("Telegram job requires account_id")
 
         identifier = job.payload.get("identifier", target.identifier)
+        mode = str(job.payload.get("mode") or "poll")
+        is_backfill = bool(job.payload.get("backfill"))
+        backfill_mode = str(job.payload.get("backfill_mode") or "").strip().lower()
         limit = int(job.payload.get("limit", settings.telegram_fetch_limit))
         from_date = _parse_iso_datetime(job.payload.get("from_date"))
         to_date = _parse_iso_datetime(job.payload.get("to_date"))
+        min_id = int(job.payload.get("min_id", 0) or 0)
+        offset_id = int(job.payload.get("offset_id", 0) or 0)
+        config = target.config or {}
+        comments_enabled = bool(config.get("comments_enabled", True))
+        if mode == "gap_fill" and not bool(config.get("gapfill_comments_enabled", False)):
+            comments_enabled = False
+        comments_limit = max(int(config.get("comments_limit", 20)), 1)
+        comments_depth = max(int(config.get("comments_depth", 2)), 1)
+        comments_recheck_posts = max(int(config.get("comments_recheck_posts", 30)), 1)
+        if is_backfill and not bool(config.get("backfill_comments_enabled", False)):
+            comments_enabled = False
 
-        messages = asyncio.run(self._fetch_messages(account, identifier, limit, from_date=from_date, to_date=to_date))
+        if mode == "participants_sync":
+            participants_limit = max(int(job.payload.get("participants_limit", config.get("participants_limit", 1000))), 1)
+            try:
+                messages = asyncio.run(
+                    asyncio.wait_for(
+                        self._fetch_participants(account, identifier, participants_limit),
+                        timeout=max(int(settings.telegram_fetch_timeout_seconds), 30),
+                    )
+                )
+            except TimeoutError as exc:
+                raise TimeoutError(
+                    f"Telegram participants fetch timeout after {max(int(settings.telegram_fetch_timeout_seconds), 30)}s"
+                ) from exc
+        else:
+            try:
+                messages, root_count, oldest_root_message_id = asyncio.run(
+                    asyncio.wait_for(
+                        self._fetch_messages(
+                            account,
+                            identifier,
+                            limit,
+                            from_date=from_date,
+                            to_date=to_date,
+                            min_id=min_id,
+                            offset_id=offset_id,
+                            comments_enabled=comments_enabled,
+                            comments_limit=comments_limit,
+                            comments_depth=comments_depth,
+                            comments_recheck_posts=comments_recheck_posts,
+                        ),
+                        timeout=max(int(settings.telegram_fetch_timeout_seconds), 30),
+                    )
+                )
+            except TimeoutError as exc:
+                raise TimeoutError(
+                    f"Telegram messages fetch timeout after {max(int(settings.telegram_fetch_timeout_seconds), 30)}s"
+                ) from exc
+            if backfill_mode == "full":
+                self._update_full_backfill_state(
+                    target=target,
+                    account_id=account.id,
+                    requested_limit=limit,
+                    fetched_root_count=root_count,
+                    oldest_root_message_id=oldest_root_message_id,
+                )
+            elif mode == "gap_fill":
+                max_message_id = None
+                max_observed_at = None
+                for item in messages:
+                    if str(item.get("event_type") or "") != "telegram_message":
+                        continue
+                    msg_id = item.get("message_id")
+                    if msg_id is not None:
+                        msg_id_int = int(msg_id)
+                        max_message_id = msg_id_int if max_message_id is None else max(max_message_id, msg_id_int)
+                    msg_date = _parse_iso_datetime(item.get("date"))
+                    if msg_date and (max_observed_at is None or msg_date > max_observed_at):
+                        max_observed_at = msg_date
+                update_gapfill_state(
+                    session=session,
+                    target_id=target.id,
+                    account_id=account.id,
+                    max_message_id=max_message_id,
+                    max_observed_at=max_observed_at,
+                    batch_count=root_count,
+                    batch_limit=limit,
+                    source="gap_fill",
+                )
 
         events: list[ParsedEvent] = []
         for item in messages:
             observed_at = dt.datetime.fromisoformat(item["date"]) if item.get("date") else None
+            event_type = str(item.get("event_type") or "telegram_message")
+            message_id = item.get("message_id")
+            chat_id = item.get("chat_id")
+            sender = item.get("sender") or {}
+            sender_id = sender.get("id")
+            if event_type == "telegram_comment":
+                external_id = f"comment:{chat_id}:{message_id}"
+            elif event_type == "telegram_participant":
+                external_id = f"participant:{chat_id}:{sender_id}:job:{job.id}"
+            else:
+                external_id = str(message_id) if message_id else None
             events.append(
                 ParsedEvent(
-                    external_id=str(item.get("message_id")) if item.get("message_id") else None,
+                    external_id=external_id,
                     observed_at=observed_at,
                     payload=item,
                 )

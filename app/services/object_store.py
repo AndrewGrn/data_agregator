@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 import uuid
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
+from uuid import UUID
 
 import boto3
 from botocore.client import Config
@@ -39,6 +42,22 @@ def _build_preview(payload: dict) -> dict:
     return preview
 
 
+def _json_default(value):
+    if isinstance(value, (dt.datetime, dt.date, dt.time)):
+        return value.isoformat()
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, set):
+        return list(value)
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, Enum):
+        return value.value
+    return str(value)
+
+
 class ObjectStore:
     def __init__(self) -> None:
         self.settings = settings
@@ -70,7 +89,9 @@ class ObjectStore:
         self._bucket_ready = True
 
     def put_json(self, parser_type: str, target_id: int, payload: dict, external_id: str | None = None) -> StoredObject:
-        payload_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        payload_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=_json_default).encode(
+            "utf-8"
+        )
         digest = hashlib.sha256(payload_bytes).hexdigest()
         size = len(payload_bytes)
         preview = _build_preview(payload)

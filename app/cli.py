@@ -9,6 +9,7 @@ from telethon.sessions import StringSession
 from app.config import get_settings
 from app.db import session_scope
 from app.services.bootstrap import ensure_default_admin, run_migrations
+from app.services.telegram_listener import run_telegram_listener_forever
 from app.services.scheduler import run_scheduler_forever, schedule_once, sync_telegram_memberships
 from app.services.worker import run_workers
 
@@ -57,6 +58,17 @@ def sync_telegram_cmd() -> None:
 @click.option("--concurrency", default=2, type=int, show_default=True)
 def run_worker_cmd(concurrency: int) -> None:
     run_workers(session_scope, concurrency)
+
+
+@cli.command("run-telegram-listener")
+@click.option(
+    "--refresh-seconds",
+    default=settings.telegram_listener_refresh_seconds,
+    type=int,
+    show_default=True,
+)
+def run_telegram_listener_cmd(refresh_seconds: int) -> None:
+    run_telegram_listener_forever(session_scope, refresh_seconds=max(int(refresh_seconds), 5))
 
 
 @cli.command("db-upgrade")

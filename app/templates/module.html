@@ -1,0 +1,503 @@
+{% extends "base.html" %}
+{% block content %}
+{% set stats = namespace(failed=0, pending=0, running=0, retry=0, succeeded=0) %}
+{% for job in jobs %}
+  {% if job.status.value == 'failed' %}{% set stats.failed = stats.failed + 1 %}{% endif %}
+  {% if job.status.value == 'pending' %}{% set stats.pending = stats.pending + 1 %}{% endif %}
+  {% if job.status.value == 'running' %}{% set stats.running = stats.running + 1 %}{% endif %}
+  {% if job.status.value == 'retry' %}{% set stats.retry = stats.retry + 1 %}{% endif %}
+  {% if job.status.value == 'succeeded' %}{% set stats.succeeded = stats.succeeded + 1 %}{% endif %}
+{% endfor %}
+
+{% if parser_name == 'telegram' %}
+<section class="card module-hero">
+  <div class="module-page-head">
+    <div>
+      <h2>{{ meta.title }}</h2>
+      <p>{{ meta.description }}</p>
+    </div>
+  </div>
+  <div class="module-metrics module-metrics-wide">
+    <div><span>Цілей</span><strong>{{ targets|length }}</strong></div>
+    <div><span>Акаунтів</span><strong>{{ accounts|length }}</strong></div>
+    <div><span>Збережено повідомлень</span><strong>{{ events_count }}</strong></div>
+    <div><span>Проблемних задач</span><strong>{{ stats.failed + stats.retry }}</strong></div>
+  </div>
+</section>
+
+<section class="card">
+  <h3>Список каналів і чатів</h3>
+  <p class="hint">Керування парсингом у один клік для кожної цілі.</p>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Назва</th>
+        <th>Канал / чат</th>
+        <th>Стан</th>
+        <th>Процес парсингу</th>
+        <th>Збережено повідомлень</th>
+        <th>Останній успішний запуск (Київ)</th>
+        <th>Дії</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in targets %}
+      {% set rt = target_runtime.get(t.id, {}) %}
+      <tr>
+        <td>{{ t.id }}</td>
+        <td>{{ t.name }}</td>
+        <td>{{ t.identifier }}</td>
+        <td>
+          {% if t.is_active %}
+          <span class="badge succeeded">Увімкнено</span>
+          {% else %}
+          <span class="badge failed">Вимкнено</span>
+          {% endif %}
+        </td>
+        <td>
+          <div><span class="state-chip {{ rt.get('tone', 'neutral') }}">{{ rt.get('process_text', 'Невідомо') }}</span></div>
+          {% if rt.get('progress_hint') and rt.get('progress_hint') != '-' %}
+          <div class="hint">{{ rt.get('progress_hint') }}</div>
+          {% endif %}
+          {% if rt.get('network_issue_text') %}
+          <div class="hint hint-warn">{{ rt.get('network_issue_text') }}</div>
+          {% endif %}
+          {% if rt.get('ingest_mode') %}
+          <div class="hint">Режим: {{ rt.get('ingest_mode') }}</div>
+          <div class="hint">Offset: {{ rt.get('offset_max_message_id', 0) }} | Синхронно: {{ rt.get('offset_accounts_text', '-') }}</div>
+          {% endif %}
+        </td>
+        <td>{{ rt.get('events', 0) }}</td>
+        <td>{{ rt.get('last_success_text', '-') }}</td>
+        <td>
+          <div class="table-actions">
+            {% if t.is_active %}
+            <form method="post" action="/modules/telegram/targets/{{ t.id }}/run-now">
+              <button class="icon-btn" type="submit" title="Оновити зараз" aria-label="Оновити зараз">&#x21BB;</button>
+            </form>
+            <form method="post" action="/modules/telegram/targets/{{ t.id }}/stop">
+              <button class="icon-btn danger" type="submit" title="Зупинити" aria-label="Зупинити">&#x23F9;</button>
+            </form>
+            {% else %}
+            <form method="post" action="/modules/telegram/targets/{{ t.id }}/run-now">
+              <button class="icon-btn" type="submit" title="Увімкнути і запустити" aria-label="Увімкнути і запустити">&#x25B6;</button>
+            </form>
+            {% endif %}
+            <a class="btn-link btn-small icon-link" href="/modules/telegram?edit_target_id={{ t.id }}" title="Редагувати" aria-label="Редагувати">&#x270E;</a>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if targets|length == 0 %}
+      <tr>
+        <td colspan="8">Поки що немає каналів або чатів.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+
+{% if edit_target %}
+<section class="card">
+  <h3>Редагувати ціль #{{ edit_target.id }}</h3>
+  <form method="post" action="/modules/telegram/targets/{{ edit_target.id }}/update">
+    <label>Назва</label>
+    <input name="name" value="{{ edit_target.name }}" required />
+    <label>Канал / чат</label>
+    <input name="identifier" value="{{ edit_target.identifier }}" required />
+    <label>Ліміт повідомлень за запуск</label>
+    <input name="limit" type="number" min="1" value="{{ edit_target_config.get('limit', 200) }}" />
+    <label>Інтервал опитування (сек)</label>
+    <input name="poll_interval_seconds" type="number" min="30" value="{{ edit_target_config.get('poll_interval_seconds', 300) }}" />
+    <label><input type="checkbox" name="live_enabled" {% if edit_target_config.get('live_enabled', True) %}checked{% endif %} /> Live + recovery (рекомендовано)</label>
+    <label>Ліміт повідомлень на gap-fill цикл</label>
+    <input name="gapfill_limit" type="number" min="1" value="{{ edit_target_config.get('gapfill_limit', 200) }}" />
+    <label><input type="checkbox" name="participants_sync_enabled" {% if edit_target_config.get('participants_sync_enabled', True) %}checked{% endif %} /> Синхронізувати учасників групи</label>
+    <label>Інтервал синхронізації учасників (сек)</label>
+    <input name="participants_sync_interval_seconds" type="number" min="300" value="{{ edit_target_config.get('participants_sync_interval_seconds', 3600) }}" />
+    <label>Ліміт учасників за цикл</label>
+    <input name="participants_limit" type="number" min="1" value="{{ edit_target_config.get('participants_limit', 1000) }}" />
+    <label><input type="checkbox" name="backfill_enabled" {% if edit_target_config.get('backfill_enabled') %}checked{% endif %} /> Увімкнути довантаження історії</label>
+    <label>Режим довантаження</label>
+    <select name="backfill_mode" class="js-backfill-mode" data-backfill-target="edit-backfill-range-{{ edit_target.id }}">
+      <option value="range" {% if edit_target_config.get('backfill_mode', 'range') == 'range' %}selected{% endif %}>За діапазоном дат</option>
+      <option value="full" {% if edit_target_config.get('backfill_mode') == 'full' %}selected{% endif %}>Повний (до першого повідомлення)</option>
+    </select>
+    <div id="edit-backfill-range-{{ edit_target.id }}">
+      <label>Початок (Київ)</label>
+      <input name="backfill_from_local" type="datetime-local" value="{{ edit_target_config.get('backfill_from_local', '') }}" />
+      <label>Кінець (Київ)</label>
+      <input name="backfill_to_local" type="datetime-local" value="{{ edit_target_config.get('backfill_to_local', '') }}" />
+      <p class="hint">Час зберігається в UTC автоматично.</p>
+    </div>
+    <label>Розмір чанка (дні)</label>
+    <input name="backfill_chunk_days" type="number" min="1" value="{{ edit_target_config.get('backfill_chunk_days', 7) }}" />
+    <label>Ліміт повідомлень на одну задачу</label>
+    <input name="backfill_limit" type="number" min="1" value="{{ edit_target_config.get('backfill_limit', 5000) }}" />
+    <div class="action-row">
+      <button type="submit">Зберегти зміни</button>
+      <a class="btn-link" href="/modules/telegram">Скасувати</a>
+    </div>
+  </form>
+</section>
+{% endif %}
+
+<section class="card">
+  <details class="details-box">
+    <summary>Розумне додавання кількох цілей</summary>
+    <form method="post" action="/modules/telegram/targets/smart-add" class="top-space">
+      <label>Список каналів/чатів (кожен з нового рядка, або через кому)</label>
+      <textarea name="entries_text" rows="6" placeholder="@channel_one&#10;https://t.me/channel_two&#10;Назва закритого чату"></textarea>
+      <label>Ліміт повідомлень за запуск</label>
+      <input name="limit" type="number" value="200" min="1" />
+      <label>Інтервал опитування (сек)</label>
+      <input name="poll_interval_seconds" type="number" value="300" min="30" />
+      <label><input type="checkbox" name="live_enabled" checked /> Live + recovery (рекомендовано)</label>
+      <label>Ліміт повідомлень на gap-fill цикл</label>
+      <input name="gapfill_limit" type="number" value="200" min="1" />
+      <label><input type="checkbox" name="participants_sync_enabled" checked /> Синхронізувати учасників групи</label>
+      <label>Інтервал синхронізації учасників (сек)</label>
+      <input name="participants_sync_interval_seconds" type="number" value="3600" min="300" />
+      <label>Ліміт учасників за цикл</label>
+      <input name="participants_limit" type="number" value="1000" min="1" />
+      <button type="submit">Додати та розподілити акаунти</button>
+      <p class="hint">Система перевіряє, які акаунти вже мають доступ, і розподіляє навантаження автоматично.</p>
+    </form>
+  </details>
+
+  <details class="details-box">
+    <summary>Додати канал / чат</summary>
+    <form method="post" action="/modules/telegram/targets" class="top-space">
+      <label>Назва</label>
+      <input name="name" required />
+      <label>Ідентифікатор</label>
+      <input name="identifier" required placeholder="@channel | chat_id | t.me/..." />
+      <label>Ліміт повідомлень за запуск</label>
+      <input name="limit" type="number" value="200" min="1" />
+      <label>Інтервал опитування (сек)</label>
+      <input name="poll_interval_seconds" type="number" value="300" min="30" />
+      <label><input type="checkbox" name="live_enabled" checked /> Live + recovery (рекомендовано)</label>
+      <label>Ліміт повідомлень на gap-fill цикл</label>
+      <input name="gapfill_limit" type="number" value="200" min="1" />
+
+      <details class="details-box">
+        <summary>Довантаження історії</summary>
+        <label><input type="checkbox" name="backfill_enabled" /> Увімкнути</label>
+        <label>Режим довантаження</label>
+        <select name="backfill_mode" class="js-backfill-mode" data-backfill-target="new-backfill-range">
+          <option value="range" selected>За діапазоном дат</option>
+          <option value="full">Повний (до першого повідомлення)</option>
+        </select>
+        <div id="new-backfill-range">
+          <label>Початок (Київ)</label>
+          <input name="backfill_from_local" type="datetime-local" />
+          <label>Кінець (Київ)</label>
+          <input name="backfill_to_local" type="datetime-local" />
+          <p class="hint">Час зберігається в UTC автоматично.</p>
+        </div>
+        <label>Розмір чанка (дні)</label>
+        <input name="backfill_chunk_days" type="number" value="7" min="1" />
+        <label>Ліміт повідомлень на одну задачу</label>
+        <input name="backfill_limit" type="number" value="5000" min="1" />
+      </details>
+
+      <button type="submit">Створити ціль</button>
+    </form>
+  </details>
+
+  <details class="details-box top-space">
+    <summary>Підключити Telegram-акаунт</summary>
+    <h4>Крок 1. Надіслати код</h4>
+    <form method="post" action="/modules/telegram/accounts/start-auth">
+      <label>Мітка акаунта</label>
+      <input name="label" required />
+      <label>Ліміт задач на годину</label>
+      <input name="hourly_limit" type="number" value="120" min="1" />
+      <label>Telegram API ID</label>
+      <input name="api_id" required />
+      <label>Telegram API Hash</label>
+      <input name="api_hash" required />
+      <label>Телефон</label>
+      <input name="phone" required placeholder="+380..." />
+      <button type="submit">Надіслати код</button>
+    </form>
+
+    <h4>Крок 2. Підтвердити код</h4>
+    {% if pending_auths|length == 0 %}
+    <p class="hint">Немає активних сесій. Спочатку виконай крок 1.</p>
+    {% endif %}
+    <form method="post" action="/modules/telegram/accounts/verify-auth">
+      <label>Спроба авторизації</label>
+      <select name="auth_id" required>
+        {% for auth in pending_auths %}
+        <option value="{{ auth.id }}">#{{ auth.id }} | {{ auth.label }} | {{ auth.phone }} | до {{ auth.expires_at }}</option>
+        {% endfor %}
+      </select>
+      <label>Код з Telegram</label>
+      <input name="code" required />
+      <label>Пароль 2FA (якщо є)</label>
+      <input name="password" type="password" />
+      <button type="submit" {% if pending_auths|length == 0 %}disabled{% endif %}>Підтвердити</button>
+    </form>
+  </details>
+
+  <details class="details-box top-space">
+    <summary>Прив’язати акаунт до каналу / чату</summary>
+    <form method="post" action="/modules/telegram/links" class="top-space">
+      <label>Ціль</label>
+      <select name="target_id">
+        {% for t in targets %}
+        <option value="{{ t.id }}">{{ t.id }} | {{ t.name }}</option>
+        {% endfor %}
+      </select>
+      <label>Акаунт</label>
+      <select name="account_id">
+        {% for a in accounts %}
+        <option value="{{ a.id }}">{{ a.id }} | {{ a.label }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit">Прив’язати</button>
+    </form>
+  </details>
+</section>
+
+<section class="card">
+  <h3>Акаунти та навантаження</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Мітка</th>
+        <th>Стан</th>
+        <th>Завантаженість</th>
+        <th>Черга</th>
+        <th>Паралельність</th>
+        <th>Канали/чати</th>
+        <th>Останній успіх (Київ)</th>
+        <th>Дії</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for account in accounts %}
+      {% set ar = account_runtime.get(account.id, {}) %}
+      <tr>
+        <td>{{ account.id }}</td>
+        <td>{{ account.label }}</td>
+        <td><span class="state-chip {{ ar.get('state_tone', 'neutral') }}">{{ ar.get('state_text', '-') }}</span></td>
+        <td>{{ ar.get('utilization', 0) }}%</td>
+        <td>{{ ar.get('queued_jobs', 0) }}</td>
+        <td>{{ ar.get('parallel_jobs', 1) }} / {{ ar.get('backfill_parallel_jobs', 1) }}</td>
+        <td>{{ ar.get('dialogs_count', 0) }}</td>
+        <td>{{ ar.get('last_success_text', '-') }}</td>
+        <td>
+          <a class="btn-link btn-small" href="/modules/telegram/accounts/{{ account.id }}">Відкрити чати</a>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if accounts|length == 0 %}
+      <tr>
+        <td colspan="9">Немає підключених акаунтів.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h3>Активні та проблемні задачі</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Ціль</th>
+        <th>Тип задачі</th>
+        <th>Акаунт</th>
+        <th>Статус</th>
+        <th>Що очікує</th>
+        <th>Спроба</th>
+        <th>Помилка</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+      {% set status_map = {'pending':'очікує', 'running':'виконується', 'retry':'повтор', 'failed':'помилка', 'succeeded':'успіх'} %}
+      {% set job_kind_key = (job.job_key or '').split(':')[0] %}
+      {% set job_kind_map = {'poll': 'Повідомлення', 'gapfill': 'Добір пропусків', 'participants': 'Учасники', 'backfill': 'Історія', 'backfill-full': 'Повна історія'} %}
+      {% set job_target = target_lookup.get(job.target_id, {}) %}
+      <tr>
+        <td>{{ job.id }}</td>
+        <td>
+          <div>{{ job_target.get('name', 'Ціль #' ~ job.target_id) }}</div>
+          <div class="hint">{{ job_target.get('identifier', '-') }}</div>
+        </td>
+        <td>{{ job_kind_map.get(job_kind_key, job_kind_key or '-') }}</td>
+        <td>{{ account_lookup.get(job.account_id, job.account_id) if job.account_id else '-' }}</td>
+        <td><span class="badge {{ job.status.value }}">{{ status_map.get(job.status.value, job.status.value) }}</span></td>
+        <td>{{ job_wait_reason.get(job.id, '-') }}</td>
+        <td>{{ job.attempt }}</td>
+        <td>{{ job.last_error or '-' }}</td>
+      </tr>
+      {% endfor %}
+      {% if jobs|length == 0 %}
+      <tr>
+        <td colspan="8">Немає активних або проблемних задач.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <details class="details-box">
+    <summary>Сервісні дії (для адміністрування)</summary>
+    <p class="hint">Для щоденної роботи ці дії зазвичай не потрібні.</p>
+    <div class="action-row top-space">
+      <form method="post" action="/scheduler/run">
+        <button type="submit">Перевірити чергу зараз</button>
+      </form>
+      <form method="post" action="/modules/telegram/jobs/retry-failed">
+        <button type="submit" {% if stats.failed == 0 %}disabled{% endif %}>Повторити лише помилкові</button>
+      </form>
+      <form method="post" action="/modules/telegram/accounts/reset-cooldown">
+        <button type="submit">Зняти паузу з акаунтів</button>
+      </form>
+      <form method="post" action="/telegram/sync-memberships">
+        <button type="submit">Оновити доступ акаунтів</button>
+      </form>
+    </div>
+  </details>
+</section>
+
+<script>
+  (function () {
+    function refreshBackfillVisibility(selectEl) {
+      var targetId = selectEl.getAttribute("data-backfill-target");
+      if (!targetId) return;
+      var rangeBox = document.getElementById(targetId);
+      if (!rangeBox) return;
+      rangeBox.style.display = selectEl.value === "full" ? "none" : "block";
+    }
+
+    var modeSelects = document.querySelectorAll(".js-backfill-mode");
+    modeSelects.forEach(function (selectEl) {
+      refreshBackfillVisibility(selectEl);
+      selectEl.addEventListener("change", function () {
+        refreshBackfillVisibility(selectEl);
+      });
+    });
+  })();
+</script>
+
+{% else %}
+<section class="card module-hero">
+  <div class="module-page-head">
+    <div>
+      <h2>{{ meta.title }}</h2>
+      <p>{{ meta.description }}</p>
+    </div>
+  </div>
+  <div class="action-row">
+    <form method="post" action="/scheduler/run">
+      <button class="btn-main" type="submit">Запустити парсинг зараз</button>
+    </form>
+    <form method="post" action="/modules/{{ parser_name }}/jobs/retry-failed">
+      <button type="submit" {% if stats.failed == 0 %}disabled{% endif %}>Повторити помилкові задачі</button>
+    </form>
+  </div>
+</section>
+
+<section class="grid-2">
+  <article class="card">
+    <h3>Додати ціль</h3>
+    <form method="post" action="/modules/{{ parser_name }}/targets">
+      <label>Назва</label>
+      <input name="name" required />
+      <label>Ідентифікатор</label>
+      <input name="identifier" required placeholder="https://example.onion/forum/" />
+      <label>Адаптер</label>
+      <select name="adapter">
+        {% for adapter_name in darknet_adapters %}
+        <option value="{{ adapter_name }}" {% if adapter_name == darknet_default_adapter %}selected{% endif %}>{{ adapter_name }}</option>
+        {% endfor %}
+      </select>
+      <label>Стартові URL (кожен з нового рядка)</label>
+      <textarea name="start_urls_text" rows="4"></textarea>
+      <label><input type="checkbox" name="login_required" /> Потрібна авторизація</label>
+      <button type="submit">Створити ціль</button>
+    </form>
+  </article>
+
+  <article class="card">
+    <h3>Додати акаунт</h3>
+    <form method="post" action="/modules/{{ parser_name }}/accounts">
+      <label>Мітка</label>
+      <input name="label" required />
+      <label>Ліміт задач на годину</label>
+      <input name="hourly_limit" type="number" value="120" min="1" />
+      <label>Логін</label>
+      <input name="username" required />
+      <label>Пароль</label>
+      <input name="password" type="password" required />
+      <label>Шлях сторінки логіну</label>
+      <input name="login_page_path" value="/login/" />
+      <label>Шлях POST логіну</label>
+      <input name="login_submit_path" value="/login/login" />
+      <button type="submit">Створити акаунт</button>
+    </form>
+  </article>
+</section>
+
+{% if meta.supports_links %}
+<section class="card">
+  <h3>Прив’язати акаунт до цілі</h3>
+  <form method="post" action="/modules/{{ parser_name }}/links" class="inline">
+    <label>Ціль</label>
+    <select name="target_id">
+      {% for t in targets %}
+      <option value="{{ t.id }}">{{ t.id }} | {{ t.name }}</option>
+      {% endfor %}
+    </select>
+    <label>Акаунт</label>
+    <select name="account_id">
+      {% for a in accounts %}
+      <option value="{{ a.id }}">{{ a.id }} | {{ a.label }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Прив’язати</button>
+  </form>
+</section>
+{% endif %}
+
+<section class="card">
+  <h3>Цілі модуля</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Назва</th>
+        <th>Ідентифікатор</th>
+        <th>Статус</th>
+        <th>Конфігурація</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in targets %}
+      <tr>
+        <td>{{ t.id }}</td>
+        <td>{{ t.name }}</td>
+        <td>{{ t.identifier }}</td>
+        <td>{{ t.onboarding_status.value }}</td>
+        <td>{{ t.config }}</td>
+      </tr>
+      {% endfor %}
+      {% if targets|length == 0 %}
+      <tr>
+        <td colspan="5">Немає цілей.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+{% endblock %}

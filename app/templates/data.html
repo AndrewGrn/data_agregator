@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card module-hero">
+  <div class="module-page-head">
+    <div>
+      <h2>Перегляд зібраних даних</h2>
+      <p>Telegram і Darknet події в одному місці.</p>
+    </div>
+  </div>
+  <form method="get" action="/data" class="inline">
+    <label>Джерело</label>
+    <select name="parser_name">
+      <option value="" {% if not parser_name %}selected{% endif %}>Усі</option>
+      <option value="telegram" {% if parser_name == 'telegram' %}selected{% endif %}>Telegram</option>
+      <option value="darknet" {% if parser_name == 'darknet' %}selected{% endif %}>Darknet</option>
+    </select>
+
+    <label>Ціль</label>
+    <select name="target_id">
+      <option value="">Усі</option>
+      {% for t in targets_for_filter %}
+      <option value="{{ t.id }}" {% if selected_target_id == t.id %}selected{% endif %}>{{ t.name }} ({{ t.identifier }})</option>
+      {% endfor %}
+    </select>
+
+    <label>Пошук</label>
+    <input name="q" value="{{ q }}" placeholder="id, текст, payload..." />
+
+    <label>Ліміт raw</label>
+    <input name="limit" type="number" min="20" max="500" value="{{ limit }}" />
+
+    <label>Ліміт чату</label>
+    <input name="chat_limit" type="number" min="50" max="1000" value="{{ chat_limit }}" />
+
+    <button type="submit">Застосувати</button>
+  </form>
+</section>
+
+{% if telegram_mode %}
+<section class="card">
+  <h3>Telegram перегляд</h3>
+  <p class="hint">Зліва список каналів/чатів, по центру стрічка повідомлень, справа користувачі вибраної цілі.</p>
+  <div class="tg-data-layout">
+    <aside class="tg-targets-panel">
+      <h4>Канали і чати</h4>
+      <div class="tg-targets-list">
+        {% for item in telegram_targets_overview %}
+        <a
+          class="tg-target-item {% if item.is_selected %}selected{% endif %}"
+          href="/data?parser_name=telegram&target_id={{ item.id }}&limit={{ limit }}&chat_limit={{ chat_limit }}{% if q %}&q={{ q }}{% endif %}"
+        >
+          <div class="tg-target-title">{{ item.name }}</div>
+          <div class="hint">{{ item.identifier }}</div>
+          <div class="tg-target-meta">
+            <span>Подій: {{ item.total_events }}</span>
+            <span>Остання: {{ item.last_event_text }}</span>
+          </div>
+        </a>
+        {% endfor %}
+        {% if telegram_targets_overview|length == 0 %}
+        <div class="hint">Ще немає Telegram-цілей.</div>
+        {% endif %}
+      </div>
+    </aside>
+
+    <section class="tg-chat-panel">
+      <h4>
+        {% if telegram_active_target %}
+        Стрічка: {{ telegram_active_target.name }} ({{ telegram_active_target.identifier }})
+        {% else %}
+        Стрічка повідомлень
+        {% endif %}
+      </h4>
+      <div class="tg-chat-stream">
+        {% for msg in telegram_chat_messages %}
+        <article class="tg-msg {% if msg.is_comment %}comment{% endif %}">
+          <div class="tg-msg-head">
+            <strong>{{ msg.sender_label }}</strong>
+            <span>{{ msg.observed_at_text }}</span>
+          </div>
+          <p>{{ msg.text }}</p>
+          <div class="tg-msg-meta">
+            <span>{{ msg.message_kind }}</span>
+            <span>ID події: {{ msg.id }}</span>
+            <span>External: {{ msg.external_id }}</span>
+            {% if msg.is_comment %}
+            <span>Root: {{ msg.root_post_id or '-' }} | Reply to: {{ msg.parent_message_id or '-' }}</span>
+            {% endif %}
+          </div>
+        </article>
+        {% endfor %}
+        {% if telegram_chat_messages|length == 0 %}
+        <div class="hint">Повідомлень за поточним фільтром не знайдено.</div>
+        {% endif %}
+      </div>
+    </section>
+
+    <aside class="tg-users-panel">
+      <h4>Користувачі цілі</h4>
+      <div class="tg-users-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Користувач</th>
+              <th>Стан</th>
+              <th>Остання активність</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for u in telegram_users %}
+            <tr>
+              <td>
+                <div>{{ u.display_name }}</div>
+                <div class="hint">{{ u.full_name }}</div>
+                <div class="hint">ID: {{ u.telegram_user_id }}</div>
+              </td>
+              <td>
+                <div>{{ u.status_text }}</div>
+                <div class="hint">{% if u.is_active_any %}Активний{% else %}Неактивний{% endif %}</div>
+                <div class="hint">Записів: {{ u.memberships_count }}</div>
+              </td>
+              <td>{{ u.last_seen_text }}</td>
+            </tr>
+            {% endfor %}
+            {% if telegram_users|length == 0 %}
+            <tr>
+              <td colspan="3">Користувачів поки що не знайдено для цієї цілі.</td>
+            </tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+    </aside>
+  </div>
+</section>
+{% endif %}
+
+<section class="card">
+  {% if telegram_mode %}
+  <details class="details-box">
+    <summary>Raw події (технічний перегляд)</summary>
+    <p class="hint">Низькорівневий список сирих подій для дебагу.</p>
+    <div class="top-space"></div>
+  {% else %}
+  <h3>Знайдені події</h3>
+  {% endif %}
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Джерело</th>
+          <th>Ціль</th>
+          <th>Акаунт</th>
+          <th>Час події (Київ)</th>
+          <th>External ID</th>
+          <th>Прев’ю</th>
+          <th>Розмір</th>
+          <th>Дія</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>{{ row.id }}</td>
+          <td>{{ row.parser_type }}</td>
+          <td>
+            <div>{{ row.target_name }}</div>
+            <div class="hint">{{ row.target_identifier }}</div>
+          </td>
+          <td>{{ row.account_label }}</td>
+          <td>{{ row.observed_at_text }}</td>
+          <td>{{ row.external_id }}</td>
+          <td>{{ row.preview_text }}</td>
+          <td>{{ row.payload_size or '-' }}</td>
+          <td>
+            <a
+              class="btn-link btn-small"
+              href="/data?selected_event_id={{ row.id }}{% if parser_name %}&parser_name={{ parser_name }}{% endif %}{% if selected_target_id %}&target_id={{ selected_target_id }}{% endif %}&limit={{ limit }}&chat_limit={{ chat_limit }}{% if q %}&q={{ q }}{% endif %}"
+            >
+              Відкрити
+            </a>
+          </td>
+        </tr>
+        {% endfor %}
+        {% if rows|length == 0 %}
+        <tr>
+          <td colspan="9">Подій за вибраним фільтром не знайдено.</td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  {% if telegram_mode %}
+  </details>
+  {% endif %}
+</section>
+
+{% if selected_event %}
+<section class="card">
+  <h3>Payload події #{{ selected_event.id }}</h3>
+  <p class="hint">Тип: {{ selected_event.parser_type.value }} | storage: {{ selected_event.storage_type }} | created: {{ selected_event.created_at }}</p>
+  <pre class="payload-pre">{{ selected_payload_pretty }}</pre>
+</section>
+{% endif %}
+{% endblock %}

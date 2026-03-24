@@ -15,13 +15,21 @@
       <input name="identifier" required placeholder="@channel | chat_id | http://...onion" />
       <label>Ліміт повідомлень (telegram)</label>
       <input name="limit" type="number" value="200" min="1" />
+      <label><input type="checkbox" name="live_enabled" checked /> Live + recovery (telegram)</label>
+      <label>Ліміт повідомлень на gap-fill цикл</label>
+      <input name="gapfill_limit" type="number" value="200" min="1" />
 
       <h3>Backfill</h3>
       <label><input type="checkbox" name="backfill_enabled" /> Увімкнути backfill</label>
-      <label>Початок (ISO datetime)</label>
-      <input name="backfill_from" placeholder="2025-01-01T00:00:00+00:00" />
-      <label>Кінець (ISO datetime)</label>
-      <input name="backfill_to" placeholder="2025-03-01T00:00:00+00:00" />
+      <label>Режим довантаження</label>
+      <select name="backfill_mode">
+        <option value="range" selected>За діапазоном дат</option>
+        <option value="full">Повний (до першого повідомлення)</option>
+      </select>
+      <label>Початок (Київ)</label>
+      <input name="backfill_from_local" type="datetime-local" />
+      <label>Кінець (Київ)</label>
+      <input name="backfill_to_local" type="datetime-local" />
       <label>Розмір чанку (дні)</label>
       <input name="backfill_chunk_days" type="number" value="7" min="1" />
       <label>Ліміт повідомлень на backfill-job</label>

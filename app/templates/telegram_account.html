@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <div class="module-page-head">
+    <div>
+      <h2>Акаунт Telegram: {{ account.label }}</h2>
+      <p>Перегляд чатів/каналів акаунта та ручне додавання у парсинг.</p>
+    </div>
+    <div class="module-actions">
+      <a class="btn-link" href="/modules/telegram">Назад до Telegram</a>
+      <form method="post" action="/modules/telegram/accounts/{{ account.id }}/refresh-dialogs">
+        <button type="submit">Оновити список чатів</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="module-metrics module-metrics-wide">
+    <div><span>Навантаження</span><strong>{{ utilization }}%</strong></div>
+    <div><span>Черга задач</span><strong>{{ queued_jobs }}</strong></div>
+    <div><span>Оцінка навантаження</span><strong>{{ load_score }}</strong></div>
+    <div><span>Пауза до</span><strong>{{ cooldown_text }}</strong></div>
+  </div>
+
+  <details class="details-box top-space" open>
+    <summary>Налаштування акаунта</summary>
+    <form method="post" action="/modules/telegram/accounts/{{ account.id }}/settings" class="top-space">
+      <label><input type="checkbox" name="is_active" {% if account.is_active %}checked{% endif %} /> Акаунт активний</label>
+      <label>Ліміт задач на годину</label>
+      <input name="hourly_limit" type="number" min="1" value="{{ account.hourly_limit }}" />
+      <label>Паралельні задачі (live/gap-fill/poll)</label>
+      <input name="parallel_jobs" type="number" min="1" value="{{ parallel_jobs }}" />
+      <label>Паралельні задачі backfill</label>
+      <input name="backfill_parallel_jobs" type="number" min="1" value="{{ backfill_parallel_jobs }}" />
+      <button type="submit">Зберегти налаштування</button>
+      <p class="hint">Типові значення: {{ default_parallel_jobs }} / {{ default_backfill_parallel_jobs }}.</p>
+    </form>
+  </details>
+</section>
+
+<section class="card">
+  <h3>Цілі, прив'язані до акаунта</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Назва</th>
+        <th>Ідентифікатор</th>
+        <th>Стан</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for target in targets %}
+      <tr>
+        <td>{{ target.id }}</td>
+        <td>{{ target.name }}</td>
+        <td>{{ target.identifier }}</td>
+        <td>{{ 'Увімкнено' if target.is_active else 'Вимкнено' }}</td>
+      </tr>
+      {% endfor %}
+      {% if targets|length == 0 %}
+      <tr>
+        <td colspan="4">Немає прив'язаних цілей.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h3>Чати і канали акаунта</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Назва</th>
+        <th>Тип</th>
+        <th>Ідентифікатор</th>
+        <th>Діалог ID</th>
+        <th>Стан</th>
+        <th>Дія</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for dialog in dialogs %}
+      <tr>
+        <td>{{ dialog.title }}</td>
+        <td>{{ dialog.kind }}</td>
+        <td>{{ dialog.identifier }}</td>
+        <td>{{ dialog.dialog_id }}</td>
+        <td>
+          {% if dialog.is_linked %}
+          <span class="badge succeeded">У парсингу</span>
+          {% else %}
+          <span class="badge pending">Не додано</span>
+          {% endif %}
+        </td>
+        <td>
+          <form method="post" action="/modules/telegram/accounts/{{ account.id }}/dialogs/add-target" class="inline">
+            <input type="hidden" name="identifier" value="{{ dialog.identifier }}" />
+            <input type="hidden" name="title" value="{{ dialog.title }}" />
+            <button type="submit">{{ 'Оновити прив’язку' if dialog.is_linked else 'Додати у парсинг' }}</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if dialogs|length == 0 %}
+      <tr>
+        <td colspan="6">Список чатів порожній. Натисни "Оновити список чатів".</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
