@@ -10,7 +10,6 @@ from app.models import JobStatus, ParseJob, ParserAccount, ParserType, Target
 from app.plugins.registry import plugin_registry
 from app.services.execution_queue import publish_jobs_sync
 from app.services.job_routing import default_max_attempts_for_queue, resolve_job_queue
-from app.services.search_autosync import autosync_search_index_batch
 
 settings = get_settings()
 
@@ -258,28 +257,8 @@ def sync_telegram_memberships(session: Session) -> dict:
 def run_scheduler_forever(session_factory, interval: int) -> None:
     import time
 
-    sync_interval_seconds = max(int(settings.opensearch_autosync_interval_seconds), 1)
-    next_search_sync_at = dt.datetime.now(dt.UTC)
-
     while True:
         with session_factory() as session:
             schedule_once(session)
-            now = dt.datetime.now(dt.UTC)
-            if settings.opensearch_autosync_enabled and now >= next_search_sync_at:
-                try:
-                    sync_result = autosync_search_index_batch(
-                        session=session,
-                        batch_size=settings.opensearch_autosync_batch_size,
-                    )
-                    if int(sync_result.get("processed") or 0) > 0:
-                        print(
-                            "[scheduler] opensearch autosync "
-                            f"mode={sync_result.get('mode')} processed={sync_result.get('processed')} "
-                            f"indexed={sync_result.get('indexed')} skipped={sync_result.get('skipped')}",
-                            flush=True,
-                        )
-                except Exception as exc:
-                    print(f"[scheduler] opensearch autosync failed: {exc}", flush=True)
-                next_search_sync_at = now + dt.timedelta(seconds=sync_interval_seconds)
             session.commit()
         time.sleep(interval)

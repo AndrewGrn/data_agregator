@@ -50,16 +50,6 @@ class Settings(BaseSettings):
     s3_bucket: str = "raw-events"
     s3_region: str = "us-east-1"
     s3_use_ssl: bool = False
-    opensearch_enabled: bool = True
-    opensearch_url: str = "http://opensearch:9200"
-    opensearch_username: str = ""
-    opensearch_password: str = ""
-    opensearch_index_messages: str = "messages-v1"
-    opensearch_verify_certs: bool = False
-    opensearch_timeout_seconds: int = 5
-    opensearch_autosync_enabled: bool = True
-    opensearch_autosync_batch_size: int = 1000
-    opensearch_autosync_interval_seconds: int = 10
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

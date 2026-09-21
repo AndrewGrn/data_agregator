@@ -86,27 +86,6 @@ services:
     volumes:
       - minio_data:/data
 
-  opensearch:
-    image: opensearchproject/opensearch:2.15.0
-    environment:
-      discovery.type: single-node
-      DISABLE_SECURITY_PLUGIN: "true"
-      OPENSEARCH_INITIAL_ADMIN_PASSWORD: "adminadmin"
-      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
-      bootstrap.memory_lock: "true"
-      cluster.routing.allocation.disk.threshold_enabled: "false"
-    ulimits:
-      memlock:
-        soft: -1
-        hard: -1
-      nofile:
-        soft: 65536
-        hard: 65536
-    ports:
-      - "9200:9200"
-    volumes:
-      - opensearch_data:/usr/share/opensearch/data
-
   api:
     build: .
     env_file:
@@ -116,7 +95,6 @@ services:
       - nats
       - torproxy
       - minio
-      - opensearch
     ports:
       - "8000:8000"
     volumes:
@@ -154,7 +132,6 @@ services:
       - nats
       - torproxy
       - minio
-      - opensearch
     command: sh -c "python -m app.cli db-upgrade && python -m app.cli run-scheduler --loop"
     volumes:
       - raw_data:/app/data/raw
@@ -184,7 +161,6 @@ services:
       - nats
       - torproxy
       - minio
-      - opensearch
     command: sh -c "python -m app.cli db-upgrade && python -m app.cli run-worker --concurrency 4 --queues telegram_live,telegram_backfill"
     volumes:
       - raw_data:/app/data/raw
@@ -214,38 +190,7 @@ services:
       - nats
       - torproxy
       - minio
-      - opensearch
     command: sh -c "python -m app.cli db-upgrade && python -m app.cli run-worker --concurrency ${WORKER_DARKNET_CONCURRENCY:-16} --queues darknet"
-    volumes:
-      - raw_data:/app/data/raw
-    develop:
-      watch:
-        - action: sync+restart
-          path: .
-          target: /app
-          ignore:
-            - .git/
-            - .venv/
-            - __pycache__/
-            - .pytest_cache/
-            - data_aggregator.db
-            - .env
-        - action: rebuild
-          path: requirements.txt
-        - action: rebuild
-          path: Dockerfile
-
-  worker-web:
-    build: .
-    env_file:
-      - .env
-    depends_on:
-      - db
-      - nats
-      - torproxy
-      - minio
-      - opensearch
-    command: sh -c "python -m app.cli db-upgrade && python -m app.cli run-worker --concurrency 1 --queues web"
     volumes:
       - raw_data:/app/data/raw
     develop:
@@ -274,7 +219,6 @@ services:
       - nats
       - torproxy
       - minio
-      - opensearch
     command: sh -c "python -m app.cli db-upgrade && python -m app.cli run-telegram-listener"
     volumes:
       - raw_data:/app/data/raw
@@ -299,5 +243,4 @@ volumes:
   pgdata:
   nats_data:
   minio_data:
-  opensearch_data:
   raw_data:

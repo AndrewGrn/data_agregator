@@ -159,19 +159,8 @@ type DarknetProfileResponse = {
 
 type SearchStatus = {
   enabled: boolean;
-  package_installed: boolean;
-  reachable: boolean;
-  index_name: string;
-  error: string | null;
-  autosync?: {
-    mode: string;
-    cursor: number;
-    indexed_total: number;
-    processed_total: number;
-    skipped_total: number;
-    last_run_at: string | null;
-    last_error: string | null;
-  };
+  backend: string;
+  indexed_events: number;
 };
 
 type SearchHit = {
@@ -358,7 +347,7 @@ export function DataPage() {
       if (err instanceof ApiError) {
         setSearchIndexError(err.message);
       } else {
-        setSearchIndexError("Не вдалося перевірити OpenSearch");
+        setSearchIndexError("Не вдалося перевірити стан пошуку");
       }
     }
   }, []);
@@ -657,7 +646,7 @@ export function DataPage() {
       if (err instanceof ApiError) {
         setSearchIndexError(err.message);
       } else {
-        setSearchIndexError("Не вдалося виконати пошук OpenSearch");
+        setSearchIndexError("Не вдалося виконати пошук");
       }
       setGlobalTextHits([]);
       setGlobalTextTotal(0);
@@ -837,7 +826,7 @@ export function DataPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-lg">Глобальний текстовий пошук (OpenSearch)</CardTitle>
+          <CardTitle className="text-lg">Глобальний текстовий пошук (Postgres FTS)</CardTitle>
           <CardDescription>
             Пошук по всіх проіндексованих повідомленнях Telegram/Darknet з урахуванням ваших прав доступу.
           </CardDescription>
@@ -894,15 +883,9 @@ export function DataPage() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-            <span>OpenSearch: {searchStatus?.enabled ? "увімкнено" : "вимкнено"}</span>
-            <span>Пакет: {searchStatus?.package_installed ? "ok" : "відсутній"}</span>
-            <span>Зʼєднання: {searchStatus?.reachable ? "ok" : "немає"}</span>
-            <span>Індекс: {searchStatus?.index_name ?? "-"}</span>
-            <span>
-              Автоіндексація:{" "}
-              {searchStatus?.autosync?.mode === "tail" ? "оновлення нових подій" : "початковий добір історії"}
-            </span>
-            <span>Авто: індексовано {Number(searchStatus?.autosync?.indexed_total ?? 0)}</span>
+            <span>Пошук: {searchStatus?.enabled ? "увімкнено" : "вимкнено"}</span>
+            <span>Backend: {searchStatus?.backend ?? "-"}</span>
+            <span>Проіндексовано подій: {Number(searchStatus?.indexed_events ?? 0)}</span>
             <span>Знайдено: {globalTextTotal}</span>
           </div>
           <div className="max-h-[420px] overflow-auto pr-1">
@@ -1440,7 +1423,7 @@ export function DataPage() {
             <div className="space-y-3">
               {crossResult.search_unavailable ? (
                 <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800">
-                  OpenSearch тимчасово недоступний: показано тільки перетини за профілями/memberships.
+                  Пошук тимчасово недоступний: показано тільки перетини за профілями/memberships.
                 </div>
               ) : null}
               <div className="text-xs text-muted-foreground">
@@ -1630,9 +1613,8 @@ export function DataPage() {
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                <span>OpenSearch: {searchStatus?.enabled ? "увімкнено" : "вимкнено"}</span>
-                <span>Зʼєднання: {searchStatus?.reachable ? "ok" : "немає"}</span>
-                <span>Індекс: {searchStatus?.index_name ?? "-"}</span>
+                <span>Пошук: {searchStatus?.enabled ? "увімкнено" : "вимкнено"}</span>
+                <span>Проіндексовано подій: {Number(searchStatus?.indexed_events ?? 0)}</span>
                 <span>Знайдено: {globalTextTotal}</span>
               </div>
               <div className="max-h-[320px] overflow-auto pr-1">

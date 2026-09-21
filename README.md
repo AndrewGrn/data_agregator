@@ -12,7 +12,7 @@
 - Telegram hybrid-режим: live listener + polling/backfill
 - Профілі Telegram-користувачів і членство в групах (`telegram_users`, `telegram_memberships`, history)
 - Зберігання raw payload в S3/MinIO (в Postgres тільки посилання + метадані)
-- Повнотекстовий пошук через OpenSearch (індексація Telegram/Darknet повідомлень)
+- Повнотекстовий пошук на Postgres FTS (`tsvector`-колонка `text_search`, `websearch_to_tsquery` + `ts_rank` + `ts_headline`, конфігурація `simple`)
 - Health-score і rate-limit для Telegram акаунтів
 - Backfill planner по діапазону дат (чанки)
 - Alembic-міграції та версіонування схеми
@@ -67,7 +67,6 @@ docker compose watch
 - `telegram-listener`
 - `db` (PostgreSQL)
 - `minio` (S3 API + console `:9001`)
-- `opensearch` (`:9200`)
 - `torproxy`
 
 ## Міграції Alembic
@@ -155,7 +154,6 @@ Scheduler створить backfill-jobs по чанках часу.
 - `GET /api/telegram/targets/{target_id}/users`
 - `GET /api/search/status`
 - `GET /api/search/messages`
-- `POST /api/search/reindex`
 - `GET /api/jobs`
 - `GET /api/events`
 - `GET /api/events/{event_id}/payload`
