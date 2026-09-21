@@ -3346,7 +3346,7 @@ def reindex_messages_search(payload: dict | None = None, db: Session = Depends(g
         event_payload = event.payload
         ok = search_index.index_raw_event(
             event=event,
-            payload=event_payload if isinstance(event_payload, dict) else {},
+            payload=event_payload,
             target=target,
         )
         if ok:
@@ -3394,8 +3394,6 @@ def telegram_target_messages(
     result: list[dict] = []
     for event in events:
         payload = event.payload
-        if not isinstance(payload, dict):
-            continue
         event_type = str(payload.get("event_type") or "")
         if event_type not in {"telegram_message", "telegram_comment"}:
             continue
@@ -4051,8 +4049,6 @@ def telegram_target_intel_extract(
     scanned_events = 0
     for event in events:
         payload_dict = event.payload
-        if not isinstance(payload_dict, dict):
-            continue
         event_type = str(payload_dict.get("event_type") or "")
         if event_type not in {"telegram_message", "telegram_comment"}:
             continue
@@ -4183,8 +4179,6 @@ def telegram_user_profile(
 
         for event in events:
             payload = event.payload
-            if not isinstance(payload, dict):
-                continue
             event_type = str(payload.get("event_type") or "")
             if event_type not in {"telegram_message", "telegram_comment"}:
                 continue
@@ -4423,8 +4417,6 @@ def darknet_user_profile(
 
         for event in events:
             payload = event.payload
-            if not isinstance(payload, dict):
-                continue
             if str(payload.get("event_type") or "") != "forum_post":
                 continue
 
@@ -4530,8 +4522,6 @@ def darknet_profiles_rebuild(payload: dict | None = None, db: Session = Depends(
         if not target_identifier:
             continue
         event_payload = event.payload
-        if not isinstance(event_payload, dict):
-            continue
         processed += 1
         changed = upsert_darknet_profile_from_event(
             session=db,

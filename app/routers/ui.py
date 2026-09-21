@@ -512,7 +512,7 @@ def parsed_data_page(
     for event in events:
         target = target_lookup.get(event.target_id)
         account = account_lookup.get(event.account_id) if event.account_id else None
-        preview = event.payload if isinstance(event.payload, dict) else {}
+        preview = event.payload
         preview_text = str(preview.get("text") or "")
 
         if query_text:
@@ -555,10 +555,7 @@ def parsed_data_page(
         if candidate:
             payload = candidate.payload
             selected_event = candidate
-            if payload is not None:
-                selected_payload_pretty = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
-            else:
-                selected_payload_pretty = "Payload недоступний"
+            selected_payload_pretty = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
 
     targets_for_filter_stmt = select(Target).order_by(Target.name.asc(), Target.id.asc())
     if parser_type_filter:
@@ -625,9 +622,6 @@ def parsed_data_page(
             chat_items: list[dict] = []
             for event in tg_events:
                 payload = event.payload
-                if not isinstance(payload, dict):
-                    continue
-
                 event_type = str(payload.get("event_type") or "")
                 if event_type not in {"telegram_message", "telegram_comment"}:
                     continue
