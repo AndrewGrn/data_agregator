@@ -7,6 +7,7 @@ QUEUE_TELEGRAM_LIVE = "telegram_live"
 QUEUE_TELEGRAM_BACKFILL = "telegram_backfill"
 QUEUE_DARKNET = "darknet"
 QUEUE_WEB = "web"
+QUEUE_WHATSAPP = "whatsapp"
 
 
 def _parser_type_value(parser_type: ParserType | str) -> str:
@@ -33,6 +34,8 @@ def resolve_job_queue(parser_type: ParserType | str, job_key: str | None = None,
         return QUEUE_DARKNET
     if parser_type_value == "web":
         return QUEUE_WEB
+    if parser_type_value == "whatsapp":
+        return QUEUE_WHATSAPP
     return parser_type_value or QUEUE_WEB
 
 

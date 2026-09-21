@@ -1,6 +1,7 @@
 from app.plugins.base import ParserPlugin
 from app.plugins.darknet import DarknetPlugin
 from app.plugins.telegram import TelegramPlugin
+from app.plugins.whatsapp import WhatsAppPlugin
 
 
 class PluginRegistry:
@@ -26,3 +27,4 @@ class PluginRegistry:
 plugin_registry = PluginRegistry()
 plugin_registry.register(TelegramPlugin())
 plugin_registry.register(DarknetPlugin())
+plugin_registry.register(WhatsAppPlugin())
