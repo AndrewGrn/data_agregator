@@ -6,6 +6,10 @@ poll jobs, so the wiped history could never be re-collected) and
 darknet_user_memberships.posts_count (which would be double-counted, since
 darknet's dedup source is now empty and every post re-parses as new).
 
+This migration does not touch raw_events itself: 0014 already rebuilt that
+table, and every service container runs `db-upgrade` on startup, so deleting
+rows here would silently wipe collected events on any restart.
+
 Revision ID: 0015_reset_derived_event_state
 Revises: 0014_normalized_events
 """
@@ -23,8 +27,6 @@ depends_on = None
 def upgrade() -> None:
     op.execute("DELETE FROM telegram_offsets")
     op.execute("UPDATE darknet_user_memberships SET posts_count = 0")
-    # Leftover verification rows from the 0014 rollout: a clean start means empty.
-    op.execute("DELETE FROM raw_events")
 
 
 def downgrade() -> None:
