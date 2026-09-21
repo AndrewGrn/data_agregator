@@ -1,0 +1,23 @@
+{
+  "v": 1,
+  "account_id": 12,
+  "chat_id": "120363012345678901@g.us",
+  "message_id": "true_120363012345678901@g.us_3EB0C767D097B4C7F2A1",
+  "timestamp": 1758400000,
+  "from": "380671234567@c.us",
+  "author": "380671234567@c.us",
+  "author_name": "Andrii",
+  "body": "привет всем",
+  "type": "chat",
+  "has_quoted": false,
+  "quoted_message_id": null,
+  "media": null,
+  "raw": {
+    "id": {"_serialized": "true_120363012345678901@g.us_3EB0C767D097B4C7F2A1"},
+    "body": "привет всем",
+    "type": "chat",
+    "timestamp": 1758400000,
+    "from": "380671234567@c.us",
+    "hasMedia": false
+  }
+}
