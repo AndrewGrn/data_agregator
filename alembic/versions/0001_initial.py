@@ -6,10 +6,13 @@ Create Date: 2026-03-20 00:00:00
 
 """
 
+from __future__ import annotations
+
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic.
@@ -19,9 +22,19 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-parser_type_enum = sa.Enum("telegram", "darknet", name="parsertype")
-job_status_enum = sa.Enum("pending", "running", "succeeded", "failed", "retry", name="jobstatus")
-onboarding_status_enum = sa.Enum("ready", "needs_account", "blocked", name="onboardingstatus")
+# create_type=False: the types are created once, explicitly, at the top of
+# upgrade(). Without it every op.create_table() referencing an enum emits its
+# own CREATE TYPE and the second table to use it fails with "already exists".
+# It also suppresses the mirror-image DROP TYPE on every op.drop_table().
+parser_type_enum = postgresql.ENUM(
+    "telegram", "darknet", name="parsertype", create_type=False
+)
+job_status_enum = postgresql.ENUM(
+    "pending", "running", "succeeded", "failed", "retry", name="jobstatus", create_type=False
+)
+onboarding_status_enum = postgresql.ENUM(
+    "ready", "needs_account", "blocked", name="onboardingstatus", create_type=False
+)
 
 
 def upgrade() -> None:
