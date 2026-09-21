@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import desc, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 from telethon.sessions import StringSession
@@ -483,7 +483,9 @@ def parsed_data_page(
     safe_chat_limit = max(50, min(int(chat_limit or 200), 1000))
     query_text = (q or "").strip().lower()
 
-    stmt = select(RawEvent).order_by(desc(RawEvent.created_at))
+    # payload is kilobytes per row (telegram embeds msg.to_dict()) and the
+    # listing only needs the normalized columns; it loads on demand if asked.
+    stmt = select(RawEvent).options(defer(RawEvent.payload)).order_by(desc(RawEvent.created_at))
     if parser_type_filter:
         stmt = stmt.where(RawEvent.parser_type == parser_type_filter)
     if target_id:
@@ -512,16 +514,16 @@ def parsed_data_page(
     for event in events:
         target = target_lookup.get(event.target_id)
         account = account_lookup.get(event.account_id) if event.account_id else None
-        preview = event.payload
-        preview_text = str(preview.get("text") or "")
+        preview_text = event.text or ""
 
         if query_text:
+            # Payload-wide search is what the planned Postgres FTS replaces;
+            # until then the filter covers the normalized/listing fields.
             haystack_parts = [
                 str(event.external_id or ""),
-                str(preview_text),
+                preview_text,
                 str(target.name if target else ""),
                 str(target.identifier if target else ""),
-                json.dumps(preview, ensure_ascii=False, default=str),
             ]
             haystack = " ".join(haystack_parts).lower()
             if query_text not in haystack:
