@@ -4,8 +4,45 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import RawEvent, Target
-from app.plugins.base import ParsedEvent
+from app.models import EventFile, RawEvent, RawEventFile, Target
+from app.plugins.base import FileRef, ParsedEvent
+
+
+def _link_files(session: Session, raw_event_id: int, files: list[FileRef]) -> None:
+    """Attach already-uploaded files to an event, deduplicating by sha256."""
+    for position, ref in enumerate(files):
+        if not ref.sha256:
+            continue
+
+        file = session.execute(
+            select(EventFile).where(EventFile.sha256 == ref.sha256)
+        ).scalar_one_or_none()
+        if file is None:
+            file = EventFile(
+                sha256=ref.sha256,
+                storage_key=f"media/{ref.sha256}",
+                mime=ref.mime,
+                size=ref.size,
+                filename=ref.filename,
+            )
+            session.add(file)
+            session.flush()
+
+        exists = session.execute(
+            select(RawEventFile).where(
+                RawEventFile.raw_event_id == raw_event_id,
+                RawEventFile.file_id == file.id,
+            )
+        ).scalar_one_or_none()
+        if exists is None:
+            session.add(
+                RawEventFile(
+                    raw_event_id=raw_event_id,
+                    file_id=file.id,
+                    source_ref=ref.source_ref,
+                    position=position,
+                )
+            )
 
 
 def persist_events(
@@ -67,6 +104,9 @@ def persist_events(
                 session.flush()
         except IntegrityError:
             continue
+
+        if event.files:
+            _link_files(session, raw_event.id, event.files)
 
         if event.external_id:
             known.add(str(event.external_id))
