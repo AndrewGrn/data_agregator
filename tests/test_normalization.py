@@ -118,3 +118,18 @@ def test_thread_summary_event_has_no_author_but_keeps_title_as_text():
     assert fields["text"] == "Сводка треда"
     assert fields["author_id"] is None
     assert fields["author_label"] is None
+
+
+def test_participant_keeps_its_own_kind():
+    """Unknown event types pass through, so a later WHERE event_kind='message'
+    does not silently pick up the 17k participant-sync rows."""
+    fields = normalize_telegram_payload(_message(event_type="telegram_participant"))
+
+    assert fields["event_kind"] == "telegram_participant"
+    assert fields["thread_id"] == "12345"
+
+
+def test_missing_event_type_still_defaults_to_message():
+    fields = normalize_telegram_payload(_message(event_type=None))
+
+    assert fields["event_kind"] == "message"

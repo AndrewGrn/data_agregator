@@ -43,6 +43,9 @@ def _entity_ref(identifier: str | int) -> str | int:
     return raw
 
 
+_EVENT_KINDS = {"telegram_message": "message", "telegram_comment": "comment"}
+
+
 def normalize_telegram_payload(item: dict) -> dict:
     """Map a Telegram message dict onto the shared ParsedEvent fields."""
     sender = item.get("sender") if isinstance(item.get("sender"), dict) else {}
@@ -66,7 +69,8 @@ def normalize_telegram_payload(item: dict) -> dict:
     else:
         author_label = None
 
-    is_comment = str(item.get("event_type") or "") == "telegram_comment"
+    event_type = str(item.get("event_type") or "")
+    is_comment = event_type == "telegram_comment"
     root_post_id = item.get("root_post_id")
     parent_message_id = item.get("parent_message_id")
     chat_id = item.get("chat_id")
@@ -82,7 +86,9 @@ def normalize_telegram_payload(item: dict) -> dict:
         "text": str(item.get("text") or "") or None,
         "author_id": author_id,
         "author_label": author_label,
-        "event_kind": "comment" if is_comment else "message",
+        # Unknown types pass through unchanged (as darknet does), so
+        # telegram_participant is not silently filed as a message.
+        "event_kind": _EVENT_KINDS.get(event_type, event_type or "message"),
         "thread_id": thread_id,
         "reply_to": str(parent_message_id) if parent_message_id is not None else None,
     }
