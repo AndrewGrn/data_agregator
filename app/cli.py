@@ -10,7 +10,12 @@ from app.config import get_settings
 from app.db import session_scope
 from app.services.bootstrap import ensure_default_admin, run_migrations
 from app.services.telegram_listener import run_telegram_listener_forever
-from app.services.scheduler import run_scheduler_forever, schedule_once, sync_telegram_memberships
+from app.services.scheduler import (
+    run_scheduler_forever,
+    schedule_once,
+    sync_telegram_memberships,
+    sync_whatsapp_memberships,
+)
 from app.services.worker import run_workers
 
 settings = get_settings()
@@ -51,6 +56,13 @@ def run_scheduler_cmd(loop_mode: bool) -> None:
 def sync_telegram_cmd() -> None:
     with session_scope() as session:
         result = sync_telegram_memberships(session)
+    click.echo(result)
+
+
+@cli.command("sync-whatsapp-memberships")
+def sync_whatsapp_cmd() -> None:
+    with session_scope() as session:
+        result = sync_whatsapp_memberships(session)
     click.echo(result)
 
 

@@ -21,6 +21,7 @@ from app.services.job_routing import (
     QUEUE_TELEGRAM_BACKFILL,
     QUEUE_TELEGRAM_LIVE,
     QUEUE_WEB,
+    QUEUE_WHATSAPP,
     resolve_job_queue,
 )
 from app.services.darknet_profiles import upsert_darknet_profile_from_event
@@ -527,7 +528,7 @@ async def run_workers_nats(session_factory, concurrency: int, queues: set[str] |
     if queues:
         allowed_queues = {str(item).strip().lower() for item in queues if str(item).strip()}
     else:
-        allowed_queues = {QUEUE_TELEGRAM_LIVE, QUEUE_TELEGRAM_BACKFILL, QUEUE_DARKNET, QUEUE_WEB}
+        allowed_queues = {QUEUE_TELEGRAM_LIVE, QUEUE_TELEGRAM_BACKFILL, QUEUE_DARKNET, QUEUE_WEB, QUEUE_WHATSAPP}
     queue_label = ",".join(sorted(allowed_queues))
     worker_slots = max(int(concurrency), 1)
     logger.info(f"starting JetStream consumer concurrency={worker_slots} queues={queue_label}")

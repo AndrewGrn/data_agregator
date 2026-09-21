@@ -7,6 +7,7 @@ from app.db import get_db
 from app.deps import get_current_user
 from app.main import app
 from app.models import ParserAccount, ServiceState, User
+from app.routers import api as api_router
 
 pytestmark = pytest.mark.postgres
 
@@ -76,6 +77,39 @@ def test_status_forbidden_for_other_user(pg_session):
     try:
         client = TestClient(app)
         response = client.get(f"/api/whatsapp/accounts/{account.id}/status")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 403
+
+
+def test_sync_memberships_route_calls_plugin_for_admin(pg_session, monkeypatch):
+    admin = User(username="admin", password_hash="x", is_admin=True)
+    pg_session.add(admin)
+    pg_session.commit()
+
+    monkeypatch.setattr(api_router, "sync_whatsapp_memberships", lambda db: {"checked": 1, "linked": 2})
+
+    app.dependency_overrides[get_db] = lambda: pg_session
+    app.dependency_overrides[get_current_user] = lambda: admin
+    try:
+        client = TestClient(app)
+        response = client.post("/api/whatsapp/sync-memberships")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {"checked": 1, "linked": 2}
+
+
+def test_sync_memberships_route_forbidden_for_non_admin(pg_session):
+    owner = _user(pg_session, "owner")
+
+    app.dependency_overrides[get_db] = lambda: pg_session
+    app.dependency_overrides[get_current_user] = lambda: owner
+    try:
+        client = TestClient(app)
+        response = client.post("/api/whatsapp/sync-memberships")
     finally:
         app.dependency_overrides.clear()
 

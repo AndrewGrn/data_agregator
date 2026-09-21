@@ -254,6 +254,11 @@ def sync_telegram_memberships(session: Session) -> dict:
     return plugin.sync_memberships(session)
 
 
+def sync_whatsapp_memberships(session: Session) -> dict:
+    plugin = plugin_registry.get("whatsapp")
+    return plugin.sync_memberships(session)
+
+
 def run_scheduler_forever(session_factory, interval: int) -> None:
     import time
 

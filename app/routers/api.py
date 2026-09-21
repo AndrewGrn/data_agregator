@@ -61,7 +61,12 @@ from app.security import (
 from app.services.darknet_profiles import upsert_darknet_profile_from_event
 from app.services.message_search import search_messages
 from app.services.object_store import object_store
-from app.services.scheduler import schedule_once, schedule_target_once, sync_telegram_memberships
+from app.services.scheduler import (
+    schedule_once,
+    schedule_target_once,
+    sync_telegram_memberships,
+    sync_whatsapp_memberships,
+)
 from app.services.telegram_accounts import (
     account_parallel_limits,
     compute_account_load_score,
@@ -2082,6 +2087,15 @@ def sync_memberships(db: Session = Depends(get_db), user=Depends(get_current_use
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Синхронізація memberships доступна адміністратору")
     result = sync_telegram_memberships(db)
+    db.commit()
+    return result
+
+
+@router.post("/whatsapp/sync-memberships")
+def whatsapp_sync_memberships(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Синхронізація memberships доступна адміністратору")
+    result = sync_whatsapp_memberships(db)
     db.commit()
     return result
 

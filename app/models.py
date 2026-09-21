@@ -43,6 +43,7 @@ class ParserTypeStr(TypeDecorator):
 class ParserType(str, enum.Enum):
     telegram = "telegram"
     darknet = "darknet"
+    whatsapp = "whatsapp"
 
 
 class JobStatus(str, enum.Enum):
