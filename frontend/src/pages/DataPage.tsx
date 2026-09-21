@@ -299,9 +299,6 @@ export function DataPage() {
   const [globalTextLoading, setGlobalTextLoading] = useState(false);
   const [globalTextHits, setGlobalTextHits] = useState<SearchHit[]>([]);
   const [globalTextTotal, setGlobalTextTotal] = useState(0);
-  const [reindexLoading, setReindexLoading] = useState(false);
-  const [reindexCursor, setReindexCursor] = useState(0);
-  const [reindexInfo, setReindexInfo] = useState("");
   const [crossInput, setCrossInput] = useState("");
   const [crossUsernamesInput, setCrossUsernamesInput] = useState("");
   const [crossLoading, setCrossLoading] = useState(false);
@@ -669,65 +666,6 @@ export function DataPage() {
     }
   }, [globalTextParser, globalTextQuery, globalTextLimit]);
 
-  const reindexAll = useCallback(async () => {
-    setReindexLoading(true);
-    setSearchIndexError("");
-    setReindexInfo("Починаю переіндексацію...");
-    try {
-      const parserValue = globalTextParser === "all" ? "" : globalTextParser;
-      let cursor = 0;
-      let totalProcessed = 0;
-      let totalIndexed = 0;
-      let totalSkipped = 0;
-      let hasMore = true;
-      let batches = 0;
-
-      while (hasMore && batches < 500) {
-        const response = await apiPost<{
-          ok: boolean;
-          processed: number;
-          indexed: number;
-          skipped: number;
-          last_event_id: number;
-          has_more: boolean;
-        }>("/api/search/reindex", {
-          parser_type: parserValue,
-          limit: 2000,
-          from_event_id: cursor,
-        });
-
-        batches += 1;
-        cursor = Number(response.last_event_id || cursor || 0);
-        totalProcessed += Number(response.processed || 0);
-        totalIndexed += Number(response.indexed || 0);
-        totalSkipped += Number(response.skipped || 0);
-        hasMore = Boolean(response.has_more) && Number(response.processed || 0) > 0;
-
-        setReindexInfo(
-          `Батчів: ${batches}. Оброблено: ${totalProcessed}, індексовано: ${totalIndexed}, пропущено: ${totalSkipped}${
-            hasMore ? "..." : ""
-          }`
-        );
-      }
-
-      setReindexCursor(cursor);
-      if (batches >= 500 && hasMore) {
-        setReindexInfo((prev) => `${prev} Зупинено: досягнуто ліміт 500 батчів.`);
-      }
-      if (globalTextQuery.trim()) {
-        await runGlobalTextSearch();
-      }
-    } catch (err) {
-      if (err instanceof ApiError) {
-        setSearchIndexError(err.message);
-      } else {
-        setSearchIndexError("Не вдалося переіндексувати дані");
-      }
-    } finally {
-      setReindexLoading(false);
-    }
-  }, [globalTextParser, globalTextQuery, runGlobalTextSearch]);
-
   const runCrossCheck = useCallback(async () => {
     setCrossLoading(true);
     setCrossError("");
@@ -954,11 +892,6 @@ export function DataPage() {
                 {globalTextLoading ? "Пошук..." : "Знайти"}
               </Button>
             </div>
-            <div className="flex items-end">
-              <Button type="button" variant="outline" onClick={() => void reindexAll()} disabled={reindexLoading}>
-                {reindexLoading ? "Індексую..." : "Переіндексувати все"}
-              </Button>
-            </div>
           </div>
           <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
             <span>OpenSearch: {searchStatus?.enabled ? "увімкнено" : "вимкнено"}</span>
@@ -971,7 +904,6 @@ export function DataPage() {
             </span>
             <span>Авто: індексовано {Number(searchStatus?.autosync?.indexed_total ?? 0)}</span>
             <span>Знайдено: {globalTextTotal}</span>
-            {reindexInfo ? <span>{reindexInfo}</span> : null}
           </div>
           <div className="max-h-[420px] overflow-auto pr-1">
             <Table>

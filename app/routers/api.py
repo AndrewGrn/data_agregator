@@ -50,8 +50,7 @@ from app.security import (
     verify_totp_code,
 )
 from app.services.darknet_profiles import upsert_darknet_profile_from_event
-from app.services.search_autosync import get_search_autosync_state
-from app.services.search_index import search_index
+from app.services.message_search import search_messages
 from app.services.scheduler import schedule_once, schedule_target_once, sync_telegram_memberships
 from app.services.telegram_accounts import (
     account_parallel_limits,
@@ -3240,13 +3239,12 @@ def telegram_targets_overview(db: Session = Depends(get_db), user=Depends(get_cu
 
 @router.get("/search/status")
 def search_status(db: Session = Depends(get_db), user=Depends(get_current_user)):
-    payload = search_index.status()
-    payload["autosync"] = get_search_autosync_state(db)
-    return payload
+    total = db.execute(select(func.count()).select_from(RawEvent)).scalar_one()
+    return {"enabled": True, "backend": "postgres", "indexed_events": int(total)}
 
 
 @router.get("/search/messages")
-def search_messages(
+def search_messages_endpoint(
     q: str = "",
     limit: int = 100,
     parser_type: str = "",
@@ -3255,7 +3253,7 @@ def search_messages(
     user=Depends(get_current_user),
 ):
     parser_filter = str(parser_type or "").strip().lower()
-    if parser_filter and parser_filter not in {ParserType.telegram.value, ParserType.darknet.value}:
+    if parser_filter and not plugin_registry.is_known(parser_filter):
         raise HTTPException(status_code=400, detail="Некоректний parser_type")
 
     if target_id is not None:
@@ -3264,23 +3262,15 @@ def search_messages(
             raise HTTPException(status_code=400, detail="target_id не відповідає parser_type")
         parser_filter = target.parser_type
 
-    status = search_index.status()
-    if not bool(status.get("enabled")):
-        raise HTTPException(status_code=503, detail="OpenSearch вимкнено")
-    if not bool(status.get("package_installed")):
-        raise HTTPException(status_code=503, detail="Пакет opensearch-py не встановлено")
-
     owner_filter = None if _is_admin(user) else int(user.id)
-    try:
-        hits, total = search_index.search_messages(
-            query=q,
-            limit=limit,
-            owner_user_id=owner_filter,
-            parser_type=parser_filter or None,
-            target_id=target_id,
-        )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    hits, total = search_messages(
+        db,
+        query=q,
+        limit=limit,
+        owner_user_id=owner_filter,
+        parser_type=parser_filter or None,
+        target_id=target_id,
+    )
 
     for item in hits:
         observed_raw = str(item.get("observed_at") or "").strip()
@@ -3295,74 +3285,6 @@ def search_messages(
         item["observed_at_text"] = _format_kyiv_datetime(observed_dt)
 
     return {"hits": hits, "total": int(total)}
-
-
-@router.post("/search/reindex")
-def reindex_messages_search(payload: dict | None = None, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    body = payload if isinstance(payload, dict) else {}
-    parser_filter = str(body.get("parser_type") or "").strip().lower()
-    if parser_filter and parser_filter not in {ParserType.telegram.value, ParserType.darknet.value}:
-        raise HTTPException(status_code=400, detail="Некоректний parser_type")
-    parser_enum = ParserType(parser_filter) if parser_filter else None
-
-    target_id_raw = body.get("target_id")
-    target_id = int(target_id_raw) if target_id_raw is not None else None
-    if target_id is not None:
-        target = _ensure_target_access(db.get(Target, int(target_id)), user)
-        if parser_enum and target.parser_type != parser_enum:
-            raise HTTPException(status_code=400, detail="target_id не відповідає parser_type")
-        parser_enum = target.parser_type
-
-    safe_limit = max(100, min(int(body.get("limit") or 2000), 5000))
-    from_event_id = max(int(body.get("from_event_id") or 0), 0)
-
-    status = search_index.status()
-    if not bool(status.get("enabled")):
-        raise HTTPException(status_code=503, detail="OpenSearch вимкнено")
-    if not bool(status.get("package_installed")):
-        raise HTTPException(status_code=503, detail="Пакет opensearch-py не встановлено")
-
-    stmt = _owned_events_stmt(user).where(RawEvent.id > from_event_id)
-    if parser_enum:
-        stmt = stmt.where(RawEvent.parser_type == parser_enum)
-    if target_id is not None:
-        stmt = stmt.where(RawEvent.target_id == int(target_id))
-
-    events = db.execute(stmt.order_by(RawEvent.id.asc()).limit(safe_limit)).scalars().all()
-    target_cache: dict[int, Target | None] = {}
-    indexed = 0
-    skipped = 0
-
-    for event in events:
-        cached_target = target_cache.get(int(event.target_id), None)
-        if int(event.target_id) not in target_cache:
-            cached_target = db.get(Target, int(event.target_id))
-            target_cache[int(event.target_id)] = cached_target
-        target = cached_target
-        if not target:
-            skipped += 1
-            continue
-
-        event_payload = event.payload
-        ok = search_index.index_raw_event(
-            event=event,
-            payload=event_payload,
-            target=target,
-        )
-        if ok:
-            indexed += 1
-        else:
-            skipped += 1
-
-    last_event_id = int(events[-1].id) if events else int(from_event_id)
-    return {
-        "ok": True,
-        "processed": int(len(events)),
-        "indexed": int(indexed),
-        "skipped": int(skipped),
-        "last_event_id": last_event_id,
-        "has_more": bool(len(events) == safe_limit),
-    }
 
 
 @router.get("/telegram/targets/{target_id}/messages")
@@ -3881,11 +3803,12 @@ def telegram_intel_cross_check(payload: dict | None = None, db: Session = Depend
         mention_targets: dict[int, dict] = {}
         mention_hits_total = 0
         try:
-            hits, total = search_index.search_messages(
+            hits, total = search_messages(
+                db,
                 query=f"@{username}",
                 limit=200,
                 owner_user_id=owner_filter,
-                parser_type=ParserType.telegram.value,
+                parser_type="telegram",
                 target_id=None,
             )
             mention_hits_total = int(total or 0)
