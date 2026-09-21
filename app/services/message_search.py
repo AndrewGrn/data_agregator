@@ -47,25 +47,38 @@ def search_messages(
 
     if text_query:
         pattern = _ilike_pattern(text_query)
-        filters.append(
-            or_(
-                text(
-                    "raw_events.text_search @@ websearch_to_tsquery(:cfg, :q)"
-                ).bindparams(cfg=FTS_CONFIG, q=text_query),
-                RawEvent.author_label.ilike(pattern, escape="\\"),
-                RawEvent.author_id.ilike(pattern, escape="\\"),
-                RawEvent.external_id.ilike(pattern, escape="\\"),
-                Target.name.ilike(pattern, escape="\\"),
-                Target.identifier.ilike(pattern, escape="\\"),
+        # Matching targets are resolved first, as ids: an OR arm on the joined
+        # table (or an IN-subquery arm) is not indexable, so the planner would
+        # fall back to a seq scan over all of raw_events. With plain ids every
+        # arm is a local predicate and the arms can be combined with a BitmapOr.
+        # targets is a small curated table, so the list stays short.
+        target_ids = (
+            session.execute(
+                select(Target.id).where(
+                    or_(
+                        Target.name.ilike(pattern, escape="\\"),
+                        Target.identifier.ilike(pattern, escape="\\"),
+                    )
+                )
             )
+            .scalars()
+            .all()
         )
+        arms = [
+            text(
+                "raw_events.text_search @@ websearch_to_tsquery(:cfg, :q)"
+            ).bindparams(cfg=FTS_CONFIG, q=text_query),
+            RawEvent.author_label.ilike(pattern, escape="\\"),
+            RawEvent.author_id.ilike(pattern, escape="\\"),
+            RawEvent.external_id.ilike(pattern, escape="\\"),
+        ]
+        if target_ids:
+            arms.append(RawEvent.target_id.in_(target_ids))
+        filters.append(or_(*arms))
 
-    # Same join as the rows query: the filters may reference Target.
+    # No join here: the filters are all predicates on raw_events now.
     total = session.execute(
-        select(func.count())
-        .select_from(RawEvent)
-        .join(Target, Target.id == RawEvent.target_id)
-        .where(*filters)
+        select(func.count()).select_from(RawEvent).where(*filters)
     ).scalar_one()
 
     if text_query:
