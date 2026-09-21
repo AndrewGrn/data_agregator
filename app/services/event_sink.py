@@ -16,14 +16,15 @@ def persist_events(
     account_id: int | None,
     owner_user_id: int | None,
     events: list[ParsedEvent],
-) -> int:
+) -> list[RawEvent]:
     """Write parsed events, skipping ones already stored.
 
     Deduplication is by (parser_type, target_id, external_id); events without
-    an external_id are always written. Returns the number of new rows.
+    an external_id are always written. Returns the rows actually inserted, in
+    input order, so callers can tell which events were new without re-querying.
     """
     if not events:
-        return 0
+        return []
 
     external_ids = [str(event.external_id) for event in events if event.external_id]
     known: set[str] = set()
@@ -38,7 +39,7 @@ def persist_events(
         known = {str(row[0]) for row in rows if row[0]}
 
     resolved_owner = owner_user_id if owner_user_id is not None else target.owner_user_id
-    written = 0
+    written: list[RawEvent] = []
 
     for event in events:
         if event.external_id and str(event.external_id) in known:
@@ -69,6 +70,6 @@ def persist_events(
 
         if event.external_id:
             known.add(str(event.external_id))
-        written += 1
+        written.append(raw_event)
 
     return written

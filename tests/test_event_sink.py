@@ -51,8 +51,9 @@ def test_persists_normalized_fields():
     )
     session.commit()
 
-    assert written == 1
+    assert len(written) == 1
     stored = session.query(RawEvent).one()
+    assert written[0] is stored
     assert stored.text == "hello"
     assert stored.author_label == "@alice"
     assert stored.payload["event_type"] == "telegram_message"
@@ -67,7 +68,7 @@ def test_duplicate_external_id_is_skipped():
     written = persist_events(session, target=target, parser_type="telegram", account_id=None, owner_user_id=None, events=[_event("1", text="changed")])
     session.commit()
 
-    assert written == 0
+    assert written == []
     assert session.query(RawEvent).count() == 1
 
 
@@ -145,7 +146,8 @@ def test_savepoint_absorbs_race_and_batch_survives():
     )
     session.commit()
 
-    assert written == 1
+    # Only the genuinely new event comes back; the race loser must not appear.
+    assert [row.external_id for row in written] == ["2"]
     duplicate_rows = session.query(RawEvent).filter_by(external_id="1").all()
     assert len(duplicate_rows) == 1
     assert duplicate_rows[0].text == "hello"  # original row untouched by the race loser

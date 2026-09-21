@@ -12,7 +12,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import JobStatus, ParseJob, ParserAccount, RawEvent, Target
+from app.models import JobStatus, ParseJob, ParserAccount, Target
 from app.plugins.registry import plugin_registry
 from app.services.execution_queue import _connect, fetch_messages, pull_subscribe_queue
 from app.services.job_routing import (
@@ -310,21 +310,7 @@ def _process_job(session: Session, job: ParseJob) -> None:
         events = plugin.run(session, job, target, account)
         max_telegram_message_id: int | None = None
         max_telegram_observed_at: dt.datetime | None = None
-        # persist_events dedups the write itself; this set only decides which
-        # events count as new for profile counters and telegram offsets.
-        external_ids = [str(event.external_id) for event in events if event.external_id]
-        seen_external_ids: set[str] = set()
-        if external_ids:
-            rows = session.execute(
-                select(RawEvent.external_id).where(
-                    RawEvent.parser_type == job.parser_type,
-                    RawEvent.target_id == job.target_id,
-                    RawEvent.external_id.in_(external_ids),
-                )
-            ).all()
-            seen_external_ids = {str(row[0]) for row in rows if row[0]}
-
-        persist_events(
+        written = persist_events(
             session,
             target=target,
             parser_type=job.parser_type,
@@ -332,11 +318,19 @@ def _process_job(session: Session, job: ParseJob) -> None:
             owner_user_id=job.owner_user_id,
             events=events,
         )
+        # Only rows persist_events actually inserted count as new. Discarding on
+        # match keeps a duplicate external_id repeated inside one batch from
+        # being treated as new twice.
+        newly_written_ids = {str(row.external_id) for row in written if row.external_id}
 
         for event in events:
             payload = event.payload if isinstance(event.payload, dict) else {}
             external_id = str(event.external_id) if event.external_id else ""
-            is_new = not (external_id and external_id in seen_external_ids)
+            if external_id:
+                is_new = external_id in newly_written_ids
+                newly_written_ids.discard(external_id)
+            else:
+                is_new = True
             if is_darknet_job:
                 upsert_darknet_profile_from_event(
                     session=session,
@@ -368,8 +362,6 @@ def _process_job(session: Session, job: ParseJob) -> None:
                             max_telegram_observed_at is None or event.observed_at > max_telegram_observed_at
                         ):
                             max_telegram_observed_at = event.observed_at
-            if external_id:
-                seen_external_ids.add(external_id)
         if is_telegram_job and account_id is not None and max_telegram_message_id is not None:
             update_offset_from_message(
                 session=session,
