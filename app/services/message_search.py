@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import Integer, String, func, literal, or_, select, text
+from sqlalchemy import func, literal, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.models import RawEvent, Target
@@ -12,6 +12,12 @@ FTS_CONFIG = "simple"
 
 def _tsquery(query: str):
     return func.websearch_to_tsquery(literal(FTS_CONFIG), literal(query))
+
+
+def _ilike_pattern(text_query: str) -> str:
+    """Wrap in wildcards, escaping the ones the user typed."""
+    escaped = text_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
 
 
 def search_messages(
@@ -40,18 +46,26 @@ def search_messages(
         filters.append(RawEvent.target_id == int(target_id))
 
     if text_query:
-        pattern = f"%{text_query}%"
+        pattern = _ilike_pattern(text_query)
         filters.append(
             or_(
-                text("raw_events.text_search @@ websearch_to_tsquery('simple', :q)").bindparams(q=text_query),
-                RawEvent.author_label.ilike(pattern),
-                RawEvent.author_id.ilike(pattern),
-                RawEvent.external_id.ilike(pattern),
+                text(
+                    "raw_events.text_search @@ websearch_to_tsquery(:cfg, :q)"
+                ).bindparams(cfg=FTS_CONFIG, q=text_query),
+                RawEvent.author_label.ilike(pattern, escape="\\"),
+                RawEvent.author_id.ilike(pattern, escape="\\"),
+                RawEvent.external_id.ilike(pattern, escape="\\"),
+                Target.name.ilike(pattern, escape="\\"),
+                Target.identifier.ilike(pattern, escape="\\"),
             )
         )
 
+    # Same join as the rows query: the filters may reference Target.
     total = session.execute(
-        select(func.count()).select_from(RawEvent).where(*filters)
+        select(func.count())
+        .select_from(RawEvent)
+        .join(Target, Target.id == RawEvent.target_id)
+        .where(*filters)
     ).scalar_one()
 
     if text_query:

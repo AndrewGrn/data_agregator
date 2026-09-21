@@ -106,3 +106,33 @@ def test_limit_is_capped(pg_session):
 
     assert len(hits) == 2
     assert total == 3
+
+
+def test_finds_by_target_name(pg_session):
+    _seed(pg_session)
+
+    hits, total = search_messages(pg_session, query="Канал", limit=10, owner_user_id=None)
+
+    assert total == 3
+    assert len(hits) == 3
+
+
+def test_finds_by_target_identifier(pg_session):
+    _seed(pg_session)
+    # A second target that matches the query but owns no events: a count query
+    # missing the join would cross-join and report 6 instead of 3.
+    pg_session.add(Target(parser_type="telegram", name="Канал 2", identifier="@chan2"))
+    pg_session.commit()
+
+    hits, total = search_messages(pg_session, query="@chan", limit=10, owner_user_id=None)
+
+    assert total == len(hits) == 3
+    assert {hit["target_identifier"] for hit in hits} == {"@chan"}
+
+
+def test_underscore_is_not_a_wildcard(pg_session):
+    _seed(pg_session)
+
+    _, total = search_messages(pg_session, query="_", limit=10, owner_user_id=None)
+
+    assert total == 0

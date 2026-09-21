@@ -3239,7 +3239,10 @@ def telegram_targets_overview(db: Session = Depends(get_db), user=Depends(get_cu
 
 @router.get("/search/status")
 def search_status(db: Session = Depends(get_db), user=Depends(get_current_user)):
-    total = db.execute(select(func.count()).select_from(RawEvent)).scalar_one()
+    stmt = select(func.count()).select_from(RawEvent)
+    if not _is_admin(user):
+        stmt = stmt.where(RawEvent.owner_user_id == int(user.id))
+    total = db.execute(stmt).scalar_one()
     return {"enabled": True, "backend": "postgres", "indexed_events": int(total)}
 
 
