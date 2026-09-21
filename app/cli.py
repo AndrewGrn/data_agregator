@@ -79,6 +79,13 @@ def run_telegram_listener_cmd(refresh_seconds: int) -> None:
     run_telegram_listener_forever(session_scope, refresh_seconds=max(int(refresh_seconds), 5))
 
 
+@cli.command("run-whatsapp-listener")
+def run_whatsapp_listener_cmd() -> None:
+    from app.services.whatsapp_listener import run_whatsapp_listener
+
+    run_whatsapp_listener()
+
+
 @cli.command("db-upgrade")
 def db_upgrade_cmd() -> None:
     run_migrations()
