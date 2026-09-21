@@ -87,8 +87,7 @@ def test_load_existing_external_ids():
                 target_id=target.id,
                 external_id="https://example.onion/threads/x#post:100",
                 observed_at=dt.datetime.now(dt.UTC),
-                storage_type="local",
-                payload_ref="data/raw/test.json",
+                payload={},
             )
         )
         session.commit()

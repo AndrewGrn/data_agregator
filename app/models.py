@@ -18,9 +18,12 @@ from sqlalchemy import (
     TypeDecorator,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+
+JSONB_OR_JSON = JSONB().with_variant(JSON, "sqlite")
 
 
 class ParserTypeStr(TypeDecorator):
@@ -212,15 +215,37 @@ class RawEvent(Base):
     owner_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     external_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     observed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    storage_type: Mapped[str] = mapped_column(String(32), default="s3")
-    payload_ref: Mapped[str | None] = mapped_column(String(1024), nullable=True)
-    payload_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    payload_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    payload_preview: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    payload: Mapped[dict] = mapped_column(JSONB_OR_JSON, nullable=False)
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    author_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    author_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    event_kind: Mapped[str] = mapped_column(String(32), default="message", index=True)
+    thread_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    reply_to: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC), index=True)
 
     target: Mapped[Target] = relationship(back_populates="events")
+
+
+class EventFile(Base):
+    __tablename__ = "event_files"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sha256: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    storage_key: Mapped[str] = mapped_column(String(512))
+    mime: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC))
+
+
+class RawEventFile(Base):
+    __tablename__ = "raw_event_files"
+
+    raw_event_id: Mapped[int] = mapped_column(ForeignKey("raw_events.id", ondelete="CASCADE"), primary_key=True)
+    file_id: Mapped[int] = mapped_column(ForeignKey("event_files.id", ondelete="CASCADE"), primary_key=True)
+    source_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class ServiceState(Base):
