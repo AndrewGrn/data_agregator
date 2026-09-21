@@ -25,4 +25,17 @@ function serializeMessage(msg, { accountId, chatId, authorName, media, quotedMes
   };
 }
 
-module.exports = { serializeMessage, CONTRACT_VERSION };
+/**
+ * Build the wire object for a wa.participants.<account_id> reply.
+ * Just reshapes whatsapp-web.js's participant objects into plain data —
+ * any interpretation (admin roles, membership decisions) belongs in Python.
+ */
+function serializeParticipants(chat) {
+  const members = (chat.participants || []).map((p) => ({
+    id: p.id && p.id._serialized ? p.id._serialized : null,
+    is_admin: Boolean(p.isAdmin || p.isSuperAdmin),
+  }));
+  return { participants: members };
+}
+
+module.exports = { serializeMessage, serializeParticipants, CONTRACT_VERSION };

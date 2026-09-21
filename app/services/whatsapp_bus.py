@@ -69,6 +69,38 @@ def request_backfill(account_id: int | None, chat_id: str, limit: int) -> None:
     asyncio.run(_publish())
 
 
+async def _request(subject: str, payload: dict, timeout: float = 30.0) -> dict:
+    connection = await _connect()
+    try:
+        response = await connection.request(
+            subject, json.dumps(payload).encode("utf-8"), timeout=timeout
+        )
+        return json.loads(response.data.decode("utf-8"))
+    finally:
+        await connection.close()
+
+
+def request_participants(account_id: int | None, chat_id: str) -> list[dict]:
+    """Ask the bridge for a group's member list; empty on any failure.
+
+    Core NATS request/reply: no persistence, no retry. If the bridge is down
+    or the chat is unreachable, this times out (or the connection itself
+    fails) and we degrade to an empty list rather than raising, so one bad
+    group never aborts a sync across every target.
+    """
+    if account_id is None:
+        logger.warning("skipping participants request for chat %s: no account", chat_id)
+        return []
+    try:
+        answer = asyncio.run(
+            _request(f"wa.participants.{int(account_id)}", {"chat_id": str(chat_id)})
+        )
+    except Exception:
+        logger.exception("participants request failed for chat %s", chat_id)
+        return []
+    return list(answer.get("participants") or [])
+
+
 async def consume_events(handler: Callable[[dict], Awaitable[None]]) -> None:
     """Run the durable consumer forever, acking only after handler succeeds.
 

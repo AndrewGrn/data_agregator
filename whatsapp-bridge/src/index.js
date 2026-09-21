@@ -3,6 +3,7 @@
 const { connect, StringCodec } = require('nats');
 const { Client: PgClient } = require('pg');
 const { createClient } = require('./client');
+const { serializeParticipants } = require('./serialize');
 
 const sc = StringCodec();
 
@@ -52,6 +53,19 @@ async function main() {
           console.log(`[bridge] backfilled ${messages.length} from ${chatId}`);
         } catch (err) {
           console.error(`[bridge] backfill ${chatId} failed: ${err.message}`);
+        }
+      }
+    })();
+
+    const participants = nc.subscribe(`wa.participants.${accountId}`);
+    (async () => {
+      for await (const request of participants) {
+        const { chat_id: chatId } = JSON.parse(sc.decode(request.data));
+        try {
+          const chat = await client.getChatById(chatId);
+          request.respond(sc.encode(JSON.stringify(serializeParticipants(chat))));
+        } catch (err) {
+          request.respond(sc.encode(JSON.stringify({ participants: [], error: err.message })));
         }
       }
     })();

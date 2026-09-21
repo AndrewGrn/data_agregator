@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import ParseJob, ParserAccount, Target
+from app.models import ParseJob, ParserAccount, Target, TargetAccountLink
 from app.plugins.base import FileRef, JobSpec, ParsedEvent, ParserPlugin
+
+logger = logging.getLogger(__name__)
 
 QUEUE_WHATSAPP = "whatsapp"
 
@@ -87,3 +91,42 @@ class WhatsAppPlugin(ParserPlugin):
             limit=int((job.payload or {}).get("limit") or 200),
         )
         return []
+
+    def sync_memberships(self, session: Session) -> dict:
+        """Refresh group membership for every active WhatsApp target.
+
+        Only `@g.us` chats (groups) have a member list; `@c.us` one-to-one
+        chats are skipped rather than asked, since the question is
+        meaningless for them.
+        """
+        from app.services.whatsapp_bus import request_participants
+
+        targets = (
+            session.execute(
+                select(Target).where(
+                    Target.parser_type == "whatsapp",
+                    Target.is_active.is_(True),
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        checked = 0
+        linked = 0
+        for target in targets:
+            if not str(target.identifier or "").endswith("@g.us"):
+                continue  # direct chats have no participant list
+
+            link = session.execute(
+                select(TargetAccountLink).where(TargetAccountLink.target_id == target.id)
+            ).scalars().first()
+            if link is None:
+                logger.info("skipping membership sync for target %s: no linked account", target.id)
+                continue
+
+            members = request_participants(account_id=link.account_id, chat_id=target.identifier)
+            checked += 1
+            linked += len(members)
+
+        return {"checked": checked, "linked": linked}
