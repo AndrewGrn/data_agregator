@@ -96,3 +96,57 @@ def test_owner_falls_back_to_target_owner():
     session.commit()
 
     assert session.query(RawEvent).one().owner_user_id == 5
+
+
+class _EmptyResult:
+    """Stand-in for a SQLAlchemy Result whose .all() found nothing."""
+
+    def all(self):
+        return []
+
+
+class _BlindPreCheckSession:
+    """Session whose first execute() returns no rows, simulating a duplicate
+    committed by another worker after our pre-check ran."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self._pre_check_done = False
+
+    def execute(self, *args, **kwargs):
+        if not self._pre_check_done:
+            self._pre_check_done = True
+            return _EmptyResult()
+        return self._inner.execute(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def test_savepoint_absorbs_race_and_batch_survives():
+    session = _session()
+    target = _target(session)
+
+    # Seed a row as if another worker already committed it.
+    persist_events(session, target=target, parser_type="telegram", account_id=None, owner_user_id=None, events=[_event("1")])
+    session.commit()
+
+    wrapped = _BlindPreCheckSession(session)
+    written = persist_events(
+        wrapped,
+        target=target,
+        parser_type="telegram",
+        account_id=None,
+        owner_user_id=None,
+        # "1" races past the blinded pre-check and must hit the DB unique
+        # constraint inside the savepoint; "2" is a genuinely new event that
+        # must still be written despite "1" raising IntegrityError first.
+        events=[_event("1", text="racing duplicate"), _event("2", text="new")],
+    )
+    session.commit()
+
+    assert written == 1
+    duplicate_rows = session.query(RawEvent).filter_by(external_id="1").all()
+    assert len(duplicate_rows) == 1
+    assert duplicate_rows[0].text == "hello"  # original row untouched by the race loser
+    assert session.query(RawEvent).filter_by(external_id="2").count() == 1
