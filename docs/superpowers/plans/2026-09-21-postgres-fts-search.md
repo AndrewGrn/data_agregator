@@ -18,6 +18,7 @@
 - Контракт ответа `GET /search/messages` не меняется: `{"hits": [...], "total": N}`, каждый hit сохраняет ключи `event_id`, `parser_type`, `target_id`, `target_name`, `target_identifier`, `account_id`, `external_id`, `event_type`, `is_comment`, `sender_id`, `sender_label`, `sender_username`, `text`, `snippet`, `observed_at`, `observed_at_text`.
 - Поле `event_type` в ответе заполняется из `raw_events.event_kind`, `sender_label`/`sender_username` — из `author_label`/`author_id`, `is_comment` — из `event_kind == "comment"`. Фронтенд не трогаем.
 - Тесты FTS требуют настоящий Postgres — на SQLite `tsvector` не существует. Такие тесты помечаются `@pytest.mark.postgres` и пропускаются, если переменная `TEST_DATABASE_URL` не задана.
+- **Тесты выполняются только против отдельной базы `aggregator_test`, никогда против `aggregator`.** Фикстура пересоздаёт схему (`DROP SCHEMA public CASCADE`), а рабочая база содержит реальные данные: 15 таргетов, 4 аккаунта, 8943 задания. Фикстура обязана отказываться работать с базой, чьё имя не оканчивается на `_test` — предохранитель важнее удобства.
 - Права доступа сохраняются: не-админ видит только события с `owner_user_id == user.id`.
 
 ---
@@ -68,10 +69,22 @@ def pytest_configure(config):
 
 @pytest.fixture
 def pg_session():
-    """Session against a real Postgres, skipped when TEST_DATABASE_URL is unset."""
+    """Session against a throwaway Postgres schema.
+
+    Skipped when TEST_DATABASE_URL is unset. Refuses any database whose name
+    does not end in `_test`: this fixture drops the whole public schema, and
+    the development database holds real targets, accounts and jobs.
+    """
     url = os.environ.get("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL not set")
+
+    db_name = url.rsplit("/", 1)[-1].split("?", 1)[0]
+    if not db_name.endswith("_test"):
+        pytest.fail(
+            f"refusing to wipe {db_name!r}: TEST_DATABASE_URL must point at a "
+            f"database whose name ends in '_test'"
+        )
 
     from app.db import Base
 
@@ -209,7 +222,8 @@ def test_limit_is_capped(pg_session):
 Run:
 ```bash
 cd /Users/andriihrenchyshen/data_agregator && docker compose up -d db && sleep 5 && \
-TEST_DATABASE_URL="postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/aggregator" \
+docker compose exec -T db psql -U postgres -c "CREATE DATABASE aggregator_test" 2>/dev/null; \
+TEST_DATABASE_URL="postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/aggregator_test" \
 pytest tests/test_message_search.py -v
 ```
 Expected: FAIL — `ModuleNotFoundError: No module named 'app.services.message_search'`
@@ -340,7 +354,7 @@ def search_messages(
 
 Run:
 ```bash
-TEST_DATABASE_URL="postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/aggregator" \
+TEST_DATABASE_URL="postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/aggregator_test" \
 pytest tests/test_message_search.py -v
 ```
 Expected: PASS (7 passed)
