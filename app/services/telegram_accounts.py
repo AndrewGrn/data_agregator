@@ -142,3 +142,47 @@ async def fetch_account_dialogs(credentials: dict, limit: int = 500) -> list[dic
 
 def refresh_account_dialogs_sync(credentials: dict, limit: int = 500) -> list[dict[str, Any]]:
     return asyncio.run(fetch_account_dialogs(credentials, limit=limit))
+
+
+async def fetch_account_session_info(credentials: dict) -> dict[str, Any]:
+    creds = credentials or {}
+    api_id = creds.get("api_id")
+    api_hash = creds.get("api_hash")
+    session_string = creds.get("session_string")
+    if not (api_id and api_hash and session_string):
+        return {
+            "alive": False,
+            "is_authorized": False,
+            "error": "Missing api_id/api_hash/session_string",
+        }
+
+    client = TelegramClient(StringSession(str(session_string)), int(api_id), str(api_hash))
+    try:
+        await client.connect()
+        is_authorized = bool(await client.is_user_authorized())
+        if not is_authorized:
+            await client.disconnect()
+            return {"alive": False, "is_authorized": False, "error": "Session is not authorized"}
+
+        me = await client.get_me()
+        await client.disconnect()
+        return {
+            "alive": True,
+            "is_authorized": True,
+            "user_id": int(getattr(me, "id", 0) or 0) or None,
+            "username": str(getattr(me, "username", "") or "").strip().lower() or None,
+            "phone": str(getattr(me, "phone", "") or "").strip() or None,
+            "first_name": str(getattr(me, "first_name", "") or "").strip() or None,
+            "last_name": str(getattr(me, "last_name", "") or "").strip() or None,
+            "is_bot": bool(getattr(me, "bot", False)),
+        }
+    except Exception as exc:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+        return {"alive": False, "is_authorized": False, "error": str(exc)}
+
+
+def refresh_account_session_info_sync(credentials: dict) -> dict[str, Any]:
+    return asyncio.run(fetch_account_session_info(credentials))

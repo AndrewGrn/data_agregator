@@ -1,16 +1,35 @@
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "./auth";
-import { LoginPage } from "./pages/LoginPage";
-import { RegisterPage } from "./pages/RegisterPage";
-import { Setup2FAPage } from "./pages/Setup2FAPage";
-import { DashboardPage } from "./pages/DashboardPage";
-import { TelegramPage } from "./pages/TelegramPage";
-import { DataPage } from "./pages/DataPage";
+import { Button } from "./components/ui/button";
+import { cn } from "./lib/utils";
 import { AdminPage } from "./pages/AdminPage";
+import { DashboardPage } from "./pages/DashboardPage";
+import { DataPage } from "./pages/DataPage";
+import { DarknetPage } from "./pages/DarknetPage";
+import { LoginPage } from "./pages/LoginPage";
+import { ProfilePage } from "./pages/ProfilePage";
+import { RegisterPage } from "./pages/RegisterPage";
+import { TelegramPage } from "./pages/TelegramPage";
+
+type NavItem = {
+  to: string;
+  label: string;
+  adminOnly?: boolean;
+};
+
+const navItems: NavItem[] = [
+  { to: "/", label: "Панель" },
+  { to: "/telegram", label: "Telegram" },
+  { to: "/darknet", label: "Darknet" },
+  { to: "/data", label: "Дані" },
+  { to: "/profile", label: "Кабінет" },
+  { to: "/admin", label: "Адмін", adminOnly: true }
+];
 
 function Shell({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const handleLogout = async () => {
     await logout();
@@ -18,30 +37,37 @@ function Shell({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <div className="app-root">
-      <header className="topbar">
-        <div className="brand">Агрегатор Даних</div>
-        <nav>
-          <Link to="/">Панель</Link>
-          <Link to="/telegram">Telegram</Link>
-          <Link to="/data">Дані</Link>
-          {user?.role === "admin" ? <Link to="/admin">Адмін</Link> : null}
-          {user?.role === "admin" ? (
-            <a href="http://localhost:8000/modules/darknet" target="_blank" rel="noreferrer">
-              Darknet
-            </a>
-          ) : null}
-        </nav>
-        <div className="topbar-right">
-          <span className="user-label">
-            {user?.username} ({user?.role === "admin" ? "admin" : "user"})
-          </span>
-          <button className="danger" onClick={handleLogout} type="button">
-            Вийти
-          </button>
+    <div className="min-h-screen bg-background">
+      <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur">
+        <div className="mx-auto flex w-full max-w-7xl items-center justify-between gap-3 px-4 py-3">
+          <div className="text-sm font-semibold tracking-wide">Агрегатор Даних</div>
+          <nav className="flex flex-wrap items-center gap-1">
+            {navItems
+              .filter((item) => !item.adminOnly || user?.role === "admin")
+              .map((item) => (
+                <Link
+                  key={item.to}
+                  to={item.to}
+                  className={cn(
+                    "rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                    location.pathname === item.to ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                  )}
+                >
+                  {item.label}
+                </Link>
+              ))}
+          </nav>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-muted-foreground">
+              {user?.username} ({user?.role === "admin" ? "admin" : "user"})
+            </span>
+            <Button type="button" variant="destructive" size="sm" onClick={handleLogout}>
+              Вийти
+            </Button>
+          </div>
         </div>
       </header>
-      <main className="container">{children}</main>
+      <main className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-4 py-6">{children}</main>
     </div>
   );
 }
@@ -49,8 +75,9 @@ function Shell({ children }: { children: React.ReactNode }) {
 function Protected({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
   const location = useLocation();
+
   if (loading) {
-    return <div className="centered">Завантаження...</div>;
+    return <div className="flex min-h-screen items-center justify-center text-sm text-muted-foreground">Завантаження...</div>;
   }
   if (!user) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
@@ -61,7 +88,7 @@ function Protected({ children }: { children: React.ReactNode }) {
 function AdminOnly({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
   if (loading) {
-    return <div className="centered">Завантаження...</div>;
+    return <div className="flex min-h-screen items-center justify-center text-sm text-muted-foreground">Завантаження...</div>;
   }
   if (!user) {
     return <Navigate to="/login" replace />;
@@ -77,7 +104,6 @@ export function App() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
-      <Route path="/setup-2fa" element={<Setup2FAPage />} />
       <Route
         path="/"
         element={
@@ -99,11 +125,31 @@ export function App() {
         }
       />
       <Route
+        path="/darknet"
+        element={
+          <Protected>
+            <Shell>
+              <DarknetPage />
+            </Shell>
+          </Protected>
+        }
+      />
+      <Route
         path="/data"
         element={
           <Protected>
             <Shell>
               <DataPage />
+            </Shell>
+          </Protected>
+        }
+      />
+      <Route
+        path="/profile"
+        element={
+          <Protected>
+            <Shell>
+              <ProfilePage />
             </Shell>
           </Protected>
         }

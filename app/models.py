@@ -51,10 +51,13 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    full_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.user, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    session_version: Mapped[int] = mapped_column(Integer, default=1)
     totp_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     totp_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -76,6 +79,20 @@ class RegistrationToken(Base):
     used_count: Mapped[int] = mapped_column(Integer, default=0)
     expires_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC), index=True)
+
+
+class DarknetAuthToken(Base):
+    __tablename__ = "darknet_auth_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("parser_accounts.id", ondelete="CASCADE"), index=True)
+    owner_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_from_ip: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    used_from_ip: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC), index=True)
 
 
@@ -148,6 +165,7 @@ class ParseJob(Base):
     account_id: Mapped[int | None] = mapped_column(ForeignKey("parser_accounts.id", ondelete="SET NULL"), nullable=True)
     owner_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     job_key: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    queue: Mapped[str] = mapped_column(String(64), default="web", index=True)
     status: Mapped[JobStatus] = mapped_column(Enum(JobStatus), default=JobStatus.pending, index=True)
     priority: Mapped[int] = mapped_column(Integer, default=100, index=True)
     attempt: Mapped[int] = mapped_column(Integer, default=0)
@@ -156,6 +174,9 @@ class ParseJob(Base):
     locked_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     lock_expires_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    dispatch_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_dispatched_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_dispatch_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC))
     updated_at: Mapped[dt.datetime] = mapped_column(
@@ -185,6 +206,58 @@ class RawEvent(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC), index=True)
 
     target: Mapped[Target] = relationship(back_populates="events")
+
+
+class ServiceState(Base):
+    __tablename__ = "service_state"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC), onupdate=lambda: dt.datetime.now(dt.UTC)
+    )
+
+
+class DarknetUser(Base):
+    __tablename__ = "darknet_users"
+    __table_args__ = (UniqueConstraint("forum_host", "username_normalized", name="uq_darknet_user_host_username"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    forum_host: Mapped[str] = mapped_column(String(255), index=True)
+    username: Mapped[str] = mapped_column(String(255))
+    username_normalized: Mapped[str] = mapped_column(String(255), index=True)
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    first_seen_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC), index=True)
+    last_seen_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC), index=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC), onupdate=lambda: dt.datetime.now(dt.UTC), index=True
+    )
+
+
+class DarknetUserMembership(Base):
+    __tablename__ = "darknet_user_memberships"
+    __table_args__ = (
+        UniqueConstraint("target_id", "darknet_user_ref_id", "thread_url", name="uq_darknet_membership_target_user_thread"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    target_id: Mapped[int] = mapped_column(ForeignKey("targets.id", ondelete="CASCADE"), index=True)
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("parser_accounts.id", ondelete="SET NULL"), nullable=True, index=True)
+    darknet_user_ref_id: Mapped[int] = mapped_column(ForeignKey("darknet_users.id", ondelete="CASCADE"), index=True)
+    thread_url: Mapped[str] = mapped_column(String(1024), index=True)
+    thread_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    posts_count: Mapped[int] = mapped_column(Integer, default=0)
+    first_seen_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC), index=True)
+    last_seen_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC), index=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC), onupdate=lambda: dt.datetime.now(dt.UTC), index=True
+    )
 
 
 class TelegramUser(Base):
@@ -281,5 +354,8 @@ class TelegramOffset(Base):
 
 
 Index("ix_jobs_target_status", ParseJob.target_id, ParseJob.status)
+Index("ix_jobs_queue_status_run_after", ParseJob.queue, ParseJob.status, ParseJob.run_after)
 Index("ix_jobs_status_priority_run_after", ParseJob.status, ParseJob.priority, ParseJob.run_after)
 Index("uq_raw_events_parser_target_external", RawEvent.parser_type, RawEvent.target_id, RawEvent.external_id, unique=True)
+Index("ix_darknet_users_host_last_seen", DarknetUser.forum_host, DarknetUser.last_seen_at)
+Index("ix_darknet_memberships_target_last_seen", DarknetUserMembership.target_id, DarknetUserMembership.last_seen_at)

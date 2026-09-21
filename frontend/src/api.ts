@@ -3,6 +3,8 @@ export type Role = "admin" | "user";
 export type User = {
   id: number;
   username: string;
+  full_name?: string | null;
+  email?: string | null;
   is_admin: boolean;
   role: Role;
   is_active?: boolean;
@@ -27,13 +29,26 @@ export type AdminRegistrationToken = {
 export type AdminUserRow = {
   id: number;
   username: string;
+  full_name: string | null;
+  email: string | null;
   role: Role;
   is_admin: boolean;
   is_active: boolean;
+  session_version: number;
   totp_enabled: boolean;
   totp_confirmed: boolean;
   created_by_token_id: number | null;
   created_at: string | null;
+};
+
+export type ProfileMe = {
+  id: number;
+  username: string;
+  full_name: string | null;
+  email: string | null;
+  role: Role;
+  is_active: boolean;
+  totp_confirmed: boolean;
 };
 
 export type AdminResources = {
@@ -177,10 +192,39 @@ export async function adminListUsers() {
   return apiGet<AdminUserRow[]>("/api/admin/users");
 }
 
-export async function adminUpdateUser(userId: number, payload: { role?: Role; is_active?: boolean }) {
+export async function adminUpdateUser(
+  userId: number,
+  payload: { role?: Role; is_active?: boolean; username?: string; full_name?: string; email?: string }
+) {
   return apiPost<{ ok: boolean }>(`/api/admin/users/${userId}`, payload);
 }
 
 export async function adminGetResources() {
   return apiGet<AdminResources>("/api/admin/resources");
+}
+
+export async function getMyProfile() {
+  return apiGet<ProfileMe>("/api/profile/me");
+}
+
+export async function updateMyProfile(payload: { username?: string; full_name?: string; email?: string }) {
+  return apiPost<{ ok: boolean }>("/api/profile/update", payload);
+}
+
+export async function changeMyPassword(payload: { current_password: string; new_password: string }) {
+  return apiPost<{ ok: boolean }>("/api/profile/change-password", payload);
+}
+
+export async function revokeMySessions() {
+  return apiPost<{ ok: boolean }>("/api/profile/revoke-sessions");
+}
+
+export async function adminResetUserPassword(userId: number, newPassword?: string) {
+  return apiPost<{ ok: boolean; generated: boolean; new_password: string }>(`/api/admin/users/${userId}/reset-password`, {
+    new_password: newPassword ?? ""
+  });
+}
+
+export async function adminRevokeUserSessions(userId: number) {
+  return apiPost<{ ok: boolean }>(`/api/admin/users/${userId}/revoke-sessions`);
 }

@@ -56,8 +56,16 @@ def sync_telegram_cmd() -> None:
 
 @cli.command("run-worker")
 @click.option("--concurrency", default=2, type=int, show_default=True)
-def run_worker_cmd(concurrency: int) -> None:
-    run_workers(session_scope, concurrency)
+@click.option(
+    "--queues",
+    default="",
+    type=str,
+    show_default=False,
+    help="Comma-separated queues (e.g. telegram_live,telegram_backfill,darknet,web). Empty = all queues.",
+)
+def run_worker_cmd(concurrency: int, queues: str) -> None:
+    queue_set = {item.strip().lower() for item in str(queues or "").split(",") if item.strip()}
+    run_workers(session_scope, concurrency, queue_set or None)
 
 
 @cli.command("run-telegram-listener")

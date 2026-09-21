@@ -165,16 +165,24 @@ def upgrade() -> None:
     bind = op.get_bind()
     admin_id = bind.execute(
         sa.text(
-            "SELECT id FROM users ORDER BY CASE WHEN is_admin = 1 THEN 0 ELSE 1 END, id ASC LIMIT 1"
+            "SELECT id FROM users ORDER BY CASE WHEN is_admin IS TRUE THEN 0 ELSE 1 END, id ASC LIMIT 1"
         )
     ).scalar()
     if admin_id is None:
         admin_id = 1
 
-    bind.execute(sa.text("UPDATE users SET role = CASE WHEN is_admin = 1 THEN 'admin' ELSE 'user' END WHERE role IS NULL"))
-    bind.execute(sa.text("UPDATE users SET is_active = 1 WHERE is_active IS NULL"))
-    bind.execute(sa.text("UPDATE users SET totp_enabled = 1 WHERE totp_enabled IS NULL"))
-    bind.execute(sa.text("UPDATE users SET totp_confirmed = 0 WHERE totp_confirmed IS NULL"))
+    if bind.dialect.name == "postgresql":
+        bind.execute(
+            sa.text(
+                "UPDATE users SET role = CASE WHEN is_admin IS TRUE "
+                "THEN CAST('admin' AS userrole) ELSE CAST('user' AS userrole) END WHERE role IS NULL"
+            )
+        )
+    else:
+        bind.execute(sa.text("UPDATE users SET role = CASE WHEN is_admin IS TRUE THEN 'admin' ELSE 'user' END WHERE role IS NULL"))
+    bind.execute(sa.text("UPDATE users SET is_active = TRUE WHERE is_active IS NULL"))
+    bind.execute(sa.text("UPDATE users SET totp_enabled = TRUE WHERE totp_enabled IS NULL"))
+    bind.execute(sa.text("UPDATE users SET totp_confirmed = FALSE WHERE totp_confirmed IS NULL"))
 
     bind.execute(sa.text("UPDATE parser_accounts SET owner_user_id = :admin_id WHERE owner_user_id IS NULL"), {"admin_id": admin_id})
     bind.execute(sa.text("UPDATE targets SET owner_user_id = :admin_id WHERE owner_user_id IS NULL"), {"admin_id": admin_id})

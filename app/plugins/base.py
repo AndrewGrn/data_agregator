@@ -16,6 +16,8 @@ class JobSpec:
     job_key: str | None
     payload: dict
     priority: int = 100
+    queue: str | None = None
+    max_attempts: int | None = None
 
 
 @dataclass(slots=True)

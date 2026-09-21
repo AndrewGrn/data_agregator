@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
+import json
 import socket
 import threading
 import time
+import uuid
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -12,7 +15,17 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import JobStatus, ParseJob, ParserAccount, RawEvent, Target
 from app.plugins.registry import plugin_registry
+from app.services.execution_queue import _connect, fetch_messages, pull_subscribe_queue
+from app.services.job_routing import (
+    QUEUE_DARKNET,
+    QUEUE_TELEGRAM_BACKFILL,
+    QUEUE_TELEGRAM_LIVE,
+    QUEUE_WEB,
+    resolve_job_queue,
+)
 from app.services.object_store import object_store
+from app.services.darknet_profiles import upsert_darknet_profile_from_event
+from app.services.search_index import search_index
 from app.services.telegram_accounts import account_parallel_limits
 from app.services.telegram_offsets import update_offset_from_message
 from app.services.telegram_profiles import upsert_telegram_profile_from_event
@@ -20,26 +33,31 @@ from app.services.telegram_profiles import upsert_telegram_profile_from_event
 settings = get_settings()
 
 
+def _effective_job_queue(job: ParseJob) -> str:
+    raw = str(getattr(job, "queue", "") or "").strip().lower()
+    if raw:
+        return raw
+    return resolve_job_queue(parser_type=job.parser_type, job_key=job.job_key)
+
+
 def _job_lock_minutes(job: ParseJob) -> int:
-    key = str(job.job_key or "")
+    queue = _effective_job_queue(job)
     fetch_timeout_seconds = max(int(settings.telegram_fetch_timeout_seconds), 30)
     soft_minutes = max(5, (fetch_timeout_seconds // 60) + 2)
     backfill_minutes = max(10, soft_minutes * 2)
-    if key.startswith("gapfill:"):
-        return soft_minutes
-    if key.startswith("backfill-full:"):
-        return backfill_minutes
-    if key.startswith("backfill:"):
-        return backfill_minutes
-    if key.startswith("poll:"):
-        return soft_minutes
-    if key.startswith("participants:"):
-        return soft_minutes
+    if queue == QUEUE_TELEGRAM_LIVE:
+        return max(int(settings.worker_telegram_live_lock_minutes), soft_minutes)
+    if queue == QUEUE_TELEGRAM_BACKFILL:
+        return max(int(settings.worker_telegram_backfill_lock_minutes), backfill_minutes)
+    if queue == QUEUE_DARKNET:
+        return max(int(settings.worker_darknet_lock_minutes), 5)
+    if queue == QUEUE_WEB:
+        return max(int(settings.worker_web_lock_minutes), 5)
     return 15
 
 
 def _job_parallel_limit(job: ParseJob, account: ParserAccount | None) -> int:
-    key = str(job.job_key or "")
+    queue = _effective_job_queue(job)
     if account and account.parser_type.value == "telegram":
         parallel_jobs, backfill_parallel_jobs = account_parallel_limits(
             account=account,
@@ -47,15 +65,15 @@ def _job_parallel_limit(job: ParseJob, account: ParserAccount | None) -> int:
             default_backfill_parallel_jobs=settings.telegram_backfill_parallel_jobs_per_account,
         )
     else:
-        parallel_jobs, backfill_parallel_jobs = 1, 1
-    if key.startswith("gapfill:"):
+        parallel_jobs, backfill_parallel_jobs = max(int(settings.darknet_parallel_jobs_per_account), 1), 1
+    if queue == QUEUE_TELEGRAM_LIVE:
         return parallel_jobs
-    if key.startswith("poll:"):
-        return parallel_jobs
-    if key.startswith("backfill-full:") or key.startswith("backfill:"):
+    if queue == QUEUE_TELEGRAM_BACKFILL:
         return backfill_parallel_jobs
-    if key.startswith("participants:"):
-        return 1
+    if queue == QUEUE_DARKNET:
+        return max(int(settings.darknet_parallel_jobs_per_account), 1)
+    if queue == QUEUE_WEB:
+        return max(int(settings.web_parallel_jobs_per_account), 1)
     return 1
 
 
@@ -74,7 +92,7 @@ def _running_jobs_for_account(session: Session, account_id: int, now: dt.datetim
     return int(session.scalar(stmt) or 0)
 
 
-def _lock_next_job(session: Session, worker_id: str) -> ParseJob | None:
+def _lock_next_job(session: Session, worker_id: str, allowed_queues: set[str] | None = None) -> ParseJob | None:
     now = dt.datetime.now(dt.UTC)
     stmt = (
         select(ParseJob)
@@ -86,6 +104,8 @@ def _lock_next_job(session: Session, worker_id: str) -> ParseJob | None:
         .order_by(ParseJob.priority.asc(), ParseJob.run_after.asc(), ParseJob.created_at.asc())
         .limit(50)
     )
+    if allowed_queues:
+        stmt = stmt.where(ParseJob.queue.in_(allowed_queues))
 
     dialect = session.get_bind().dialect.name
     if dialect in {"postgresql", "mysql"}:
@@ -120,6 +140,53 @@ def _lock_next_job(session: Session, worker_id: str) -> ParseJob | None:
         return candidate
 
     return None
+
+
+def _lock_job_by_id(
+    session: Session,
+    worker_id: str,
+    job_id: int,
+    allowed_queues: set[str] | None = None,
+) -> ParseJob | None:
+    now = dt.datetime.now(dt.UTC)
+    stmt = select(ParseJob).where(
+        ParseJob.id == int(job_id),
+        ParseJob.status.in_([JobStatus.pending, JobStatus.retry]),
+        ParseJob.run_after <= now,
+        or_(ParseJob.lock_expires_at.is_(None), ParseJob.lock_expires_at < now),
+    )
+    if allowed_queues:
+        stmt = stmt.where(ParseJob.queue.in_(allowed_queues))
+
+    dialect = session.get_bind().dialect.name
+    if dialect in {"postgresql", "mysql"}:
+        stmt = stmt.with_for_update(skip_locked=True)
+
+    candidate = session.execute(stmt).scalar_one_or_none()
+    if candidate is None:
+        return None
+
+    if candidate.account_id is not None:
+        account_stmt = select(ParserAccount).where(ParserAccount.id == candidate.account_id)
+        if dialect in {"postgresql", "mysql"}:
+            account_stmt = account_stmt.with_for_update(skip_locked=True)
+        account_row = session.execute(account_stmt).scalar_one_or_none()
+        if account_row is None:
+            return None
+        running_count = _running_jobs_for_account(
+            session=session,
+            account_id=int(candidate.account_id),
+            now=now,
+            excluding_job_id=int(candidate.id),
+        )
+        if running_count >= _job_parallel_limit(candidate, account_row):
+            return None
+
+    candidate.status = JobStatus.running
+    candidate.locked_by = worker_id
+    candidate.lock_expires_at = now + dt.timedelta(minutes=_job_lock_minutes(candidate))
+    candidate.attempt += 1
+    return candidate
 
 
 def _recover_stale_running_jobs(session: Session) -> int:
@@ -162,6 +229,7 @@ def _recover_stale_running_jobs(session: Session) -> int:
 def _complete_job(session: Session, job: ParseJob) -> None:
     job.status = JobStatus.succeeded
     job.finished_at = dt.datetime.now(dt.UTC)
+    job.last_error = None
     job.locked_by = None
     job.lock_expires_at = None
 
@@ -200,7 +268,18 @@ def _fail_job(session: Session, job: ParseJob, error: str) -> None:
         job.finished_at = now
     else:
         job.status = JobStatus.retry
-        backoff = min(300, 2 ** job.attempt)
+        queue = _effective_job_queue(job)
+        if queue == QUEUE_TELEGRAM_LIVE:
+            max_backoff = max(int(settings.worker_telegram_live_backoff_max_seconds), 1)
+        elif queue == QUEUE_TELEGRAM_BACKFILL:
+            max_backoff = max(int(settings.worker_telegram_backfill_backoff_max_seconds), 1)
+        elif queue == QUEUE_DARKNET:
+            max_backoff = max(int(settings.worker_darknet_backoff_max_seconds), 1)
+        elif queue == QUEUE_WEB:
+            max_backoff = max(int(settings.worker_web_backoff_max_seconds), 1)
+        else:
+            max_backoff = 300
+        backoff = min(max_backoff, 2 ** job.attempt)
         job.run_after = now + dt.timedelta(seconds=backoff)
     job.last_error = error[:2000]
     job.locked_by = None
@@ -212,6 +291,7 @@ def _process_job(session: Session, job: ParseJob) -> None:
     account_id = int(job.account_id) if job.account_id is not None else None
     parser_type_value = job.parser_type.value
     is_telegram_job = parser_type_value == "telegram"
+    is_darknet_job = parser_type_value == "darknet"
 
     target = session.get(Target, job.target_id)
     if not target:
@@ -223,7 +303,8 @@ def _process_job(session: Session, job: ParseJob) -> None:
     started_at = dt.datetime.now(dt.UTC)
     print(
         f"[worker] start job#{job.id} key={job.job_key or '-'} "
-        f"target={job.target_id} account={job.account_id or '-'} attempt={job.attempt}",
+        f"queue={_effective_job_queue(job)} target={job.target_id} "
+        f"account={job.account_id or '-'} attempt={job.attempt}",
         flush=True,
     )
 
@@ -233,22 +314,58 @@ def _process_job(session: Session, job: ParseJob) -> None:
         max_telegram_observed_at: dt.datetime | None = None
         external_ids = [event.external_id for event in events if event.external_id]
         existing_external_ids: set[str] = set()
+        existing_raw_events_by_external_id: dict[str, RawEvent] = {}
         if external_ids:
             rows = (
                 session.execute(
-                    select(RawEvent.external_id).where(
+                    select(RawEvent).where(
                         RawEvent.parser_type == job.parser_type,
                         RawEvent.target_id == job.target_id,
                         RawEvent.external_id.in_(external_ids),
                     )
                 )
-                .scalars()
                 .all()
             )
-            existing_external_ids = {str(item) for item in rows if item}
+            for (raw_event,) in rows:
+                if not raw_event.external_id:
+                    continue
+                external_id = str(raw_event.external_id)
+                existing_external_ids.add(external_id)
+                existing_raw_events_by_external_id[external_id] = raw_event
 
         for event in events:
             if event.external_id and event.external_id in existing_external_ids:
+                if is_darknet_job:
+                    payload = event.payload if isinstance(event.payload, dict) else {}
+                    existing_raw_event = existing_raw_events_by_external_id.get(str(event.external_id))
+                    if existing_raw_event is not None and isinstance(payload, dict):
+                        # Self-heal payload_ref if the old object was lost and this event is re-emitted.
+                        existing_payload = object_store.get_json(existing_raw_event)
+                        if not isinstance(existing_payload, dict):
+                            stored = object_store.put_json(
+                                parser_type=job.parser_type.value,
+                                target_id=job.target_id,
+                                payload=payload,
+                                external_id=event.external_id,
+                            )
+                            existing_raw_event.storage_type = stored.storage_type
+                            existing_raw_event.payload_ref = stored.payload_ref
+                            existing_raw_event.payload_sha256 = stored.payload_sha256
+                            existing_raw_event.payload_size = stored.payload_size
+                            existing_raw_event.payload_preview = stored.payload_preview
+                            existing_raw_event.payload = stored.payload_inline
+                            if event.observed_at:
+                                existing_raw_event.observed_at = event.observed_at
+                            search_index.index_raw_event(event=existing_raw_event, payload=payload, target=target)
+                    upsert_darknet_profile_from_event(
+                        session=session,
+                        target_id=job.target_id,
+                        target_identifier=str(target.identifier or ""),
+                        account_id=job.account_id,
+                        payload=payload,
+                        observed_at=event.observed_at,
+                        increment_post_counter=False,
+                    )
                 continue
             stored = object_store.put_json(
                 parser_type=job.parser_type.value,
@@ -259,25 +376,36 @@ def _process_job(session: Session, job: ParseJob) -> None:
             try:
                 # Savepoint prevents a duplicate insert race from failing the whole job.
                 with session.begin_nested():
-                    session.add(
-                        RawEvent(
-                            parser_type=job.parser_type,
-                            target_id=job.target_id,
-                            account_id=job.account_id,
-                            owner_user_id=job.owner_user_id if job.owner_user_id is not None else target.owner_user_id,
-                            external_id=event.external_id,
-                            observed_at=event.observed_at,
-                            storage_type=stored.storage_type,
-                            payload_ref=stored.payload_ref,
-                            payload_sha256=stored.payload_sha256,
-                            payload_size=stored.payload_size,
-                            payload_preview=stored.payload_preview,
-                            payload=stored.payload_inline,
-                        )
+                    raw_event = RawEvent(
+                        parser_type=job.parser_type,
+                        target_id=job.target_id,
+                        account_id=job.account_id,
+                        owner_user_id=job.owner_user_id if job.owner_user_id is not None else target.owner_user_id,
+                        external_id=event.external_id,
+                        observed_at=event.observed_at,
+                        storage_type=stored.storage_type,
+                        payload_ref=stored.payload_ref,
+                        payload_sha256=stored.payload_sha256,
+                        payload_size=stored.payload_size,
+                        payload_preview=stored.payload_preview,
+                        payload=stored.payload_inline,
                     )
+                    session.add(raw_event)
                     session.flush()
             except IntegrityError:
+                if is_darknet_job:
+                    payload = event.payload if isinstance(event.payload, dict) else {}
+                    upsert_darknet_profile_from_event(
+                        session=session,
+                        target_id=job.target_id,
+                        target_identifier=str(target.identifier or ""),
+                        account_id=job.account_id,
+                        payload=payload,
+                        observed_at=event.observed_at,
+                        increment_post_counter=False,
+                    )
                 continue
+            search_index.index_raw_event(event=raw_event, payload=event.payload if isinstance(event.payload, dict) else {}, target=target)
             if is_telegram_job:
                 upsert_telegram_profile_from_event(
                     session=session,
@@ -300,6 +428,16 @@ def _process_job(session: Session, job: ParseJob) -> None:
                             max_telegram_observed_at is None or event.observed_at > max_telegram_observed_at
                         ):
                             max_telegram_observed_at = event.observed_at
+            elif is_darknet_job:
+                payload = event.payload if isinstance(event.payload, dict) else {}
+                upsert_darknet_profile_from_event(
+                    session=session,
+                    target_id=job.target_id,
+                    target_identifier=str(target.identifier or ""),
+                    account_id=job.account_id,
+                    payload=payload,
+                    observed_at=event.observed_at,
+                )
             if event.external_id:
                 existing_external_ids.add(event.external_id)
         if is_telegram_job and account_id is not None and max_telegram_message_id is not None:
@@ -342,11 +480,11 @@ def _process_job(session: Session, job: ParseJob) -> None:
         )
 
 
-def worker_loop(session_factory, worker_name: str) -> None:
+def worker_loop(session_factory, worker_name: str, allowed_queues: set[str] | None = None) -> None:
     while True:
         with session_factory() as session:
             _recover_stale_running_jobs(session)
-            job = _lock_next_job(session, worker_name)
+            job = _lock_next_job(session, worker_name, allowed_queues=allowed_queues)
             if not job:
                 session.commit()
                 time.sleep(settings.worker_poll_interval)
@@ -359,15 +497,140 @@ def worker_loop(session_factory, worker_name: str) -> None:
             session.commit()
 
 
-def run_workers(session_factory, concurrency: int) -> None:
+def run_workers(session_factory, concurrency: int, queues: set[str] | None = None) -> None:
+    if settings.nats_enabled:
+        asyncio.run(run_workers_nats(session_factory, concurrency, queues))
+        return
+
     hostname = socket.gethostname()
     threads: list[threading.Thread] = []
+    allowed_queues: set[str] | None = None
+    if queues:
+        allowed_queues = {str(item).strip().lower() for item in queues if str(item).strip()}
+    queue_label = ",".join(sorted(allowed_queues)) if allowed_queues else "all"
+    print(f"[worker] starting pool concurrency={concurrency} queues={queue_label}", flush=True)
 
     for idx in range(concurrency):
         name = f"{hostname}-w{idx}"
-        thread = threading.Thread(target=worker_loop, args=(session_factory, name), daemon=True)
+        thread = threading.Thread(target=worker_loop, args=(session_factory, name, allowed_queues), daemon=True)
         thread.start()
         threads.append(thread)
 
     for thread in threads:
         thread.join()
+
+
+async def _consume_queue_loop(
+    session_factory,
+    queue_name: str,
+    subscription,
+    worker_prefix: str,
+    allowed_queues: set[str],
+    semaphore: asyncio.Semaphore,
+) -> None:
+    batch_size = max(int(settings.nats_fetch_batch_size), 1)
+    timeout_seconds = max(int(settings.nats_fetch_timeout_seconds), 1)
+    inflight: set[asyncio.Task] = set()
+
+    async def _handle_message(msg) -> None:
+        try:
+            payload = json.loads(msg.data.decode("utf-8")) if msg.data else {}
+            job_id = int(payload.get("job_id"))
+        except Exception:
+            await msg.ack()
+            return
+
+        try:
+            async with semaphore:
+                await asyncio.to_thread(
+                    _process_delivery_sync,
+                    session_factory,
+                    worker_prefix,
+                    queue_name,
+                    job_id,
+                    allowed_queues,
+                )
+        finally:
+            await msg.ack()
+
+    while True:
+        messages = await fetch_messages(subscription, batch=batch_size, timeout_seconds=timeout_seconds)
+        if not messages:
+            if inflight:
+                done, _ = await asyncio.wait(inflight, timeout=0.1, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    inflight.discard(task)
+            await asyncio.sleep(0.1)
+            continue
+
+        for msg in messages:
+            task = asyncio.create_task(_handle_message(msg))
+            inflight.add(task)
+            task.add_done_callback(inflight.discard)
+
+        # Keep memory bounded while still allowing long-running jobs and fresh deliveries in parallel.
+        max_inflight = batch_size * 8
+        if len(inflight) >= max_inflight:
+            done, _ = await asyncio.wait(inflight, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                inflight.discard(task)
+
+
+def _process_delivery_sync(
+    session_factory,
+    worker_prefix: str,
+    queue_name: str,
+    job_id: int,
+    allowed_queues: set[str],
+) -> None:
+    worker_id = f"{worker_prefix}-{queue_name}-{uuid.uuid4().hex[:8]}"
+    with session_factory() as session:
+        _recover_stale_running_jobs(session)
+        job = _lock_job_by_id(
+            session=session,
+            worker_id=worker_id,
+            job_id=job_id,
+            allowed_queues=allowed_queues,
+        )
+        if not job:
+            session.commit()
+            return
+        session.commit()
+        _process_job(session, job)
+        session.commit()
+
+
+async def run_workers_nats(session_factory, concurrency: int, queues: set[str] | None = None) -> None:
+    hostname = socket.gethostname()
+    allowed_queues: set[str]
+    if queues:
+        allowed_queues = {str(item).strip().lower() for item in queues if str(item).strip()}
+    else:
+        allowed_queues = {QUEUE_TELEGRAM_LIVE, QUEUE_TELEGRAM_BACKFILL, QUEUE_DARKNET, QUEUE_WEB}
+    queue_label = ",".join(sorted(allowed_queues))
+    worker_slots = max(int(concurrency), 1)
+    print(f"[worker] starting JetStream consumer concurrency={worker_slots} queues={queue_label}", flush=True)
+    semaphore = asyncio.Semaphore(worker_slots)
+
+    nc, js = await _connect()
+    try:
+        tasks: list[asyncio.Task] = []
+        worker_prefix = f"{hostname}"
+        for queue_name in sorted(allowed_queues):
+            durable = f"worker_{queue_name}"
+            subscription = await pull_subscribe_queue(js=js, queue=queue_name, durable=durable)
+            tasks.append(
+                asyncio.create_task(
+                    _consume_queue_loop(
+                        session_factory=session_factory,
+                        queue_name=queue_name,
+                        subscription=subscription,
+                        worker_prefix=worker_prefix,
+                        allowed_queues=allowed_queues,
+                        semaphore=semaphore,
+                    )
+                )
+            )
+        await asyncio.gather(*tasks)
+    finally:
+        await nc.close()

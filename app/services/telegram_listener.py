@@ -12,6 +12,7 @@ from telethon.sessions import StringSession
 
 from app.models import ParserAccount, ParserType, RawEvent, Target, TargetAccountLink
 from app.services.object_store import object_store
+from app.services.search_index import search_index
 from app.services.telegram_offsets import update_offset_from_message
 from app.services.telegram_profiles import upsert_telegram_profile_from_event
 from app.services.telegram_accounts import normalize_telegram_identifier
@@ -241,9 +242,8 @@ class TelegramHybridListener:
         payload: dict[str, Any],
     ) -> None:
         with self._session_factory() as session:
-            target_owner_id = (
-                session.execute(select(Target.owner_user_id).where(Target.id == target_id)).scalar_one_or_none()
-            )
+            target = session.get(Target, target_id)
+            target_owner_id = target.owner_user_id if target else None
             exists = session.execute(
                 select(RawEvent.id).where(
                     RawEvent.parser_type == ParserType.telegram,
@@ -282,25 +282,25 @@ class TelegramHybridListener:
             try:
                 # Another process may write the same external_id concurrently.
                 with session.begin_nested():
-                    session.add(
-                        RawEvent(
-                            parser_type=ParserType.telegram,
-                            target_id=target_id,
-                            account_id=account_id,
-                            owner_user_id=target_owner_id,
-                            external_id=external_id,
-                            observed_at=observed_at,
-                            storage_type=stored.storage_type,
-                            payload_ref=stored.payload_ref,
-                            payload_sha256=stored.payload_sha256,
-                            payload_size=stored.payload_size,
-                            payload_preview=stored.payload_preview,
-                            payload=stored.payload_inline,
-                        )
+                    raw_event = RawEvent(
+                        parser_type=ParserType.telegram,
+                        target_id=target_id,
+                        account_id=account_id,
+                        owner_user_id=target_owner_id,
+                        external_id=external_id,
+                        observed_at=observed_at,
+                        storage_type=stored.storage_type,
+                        payload_ref=stored.payload_ref,
+                        payload_sha256=stored.payload_sha256,
+                        payload_size=stored.payload_size,
+                        payload_preview=stored.payload_preview,
+                        payload=stored.payload_inline,
                     )
+                    session.add(raw_event)
                     session.flush()
             except IntegrityError:
                 return
+            search_index.index_raw_event(event=raw_event, payload=payload, target=target)
             upsert_telegram_profile_from_event(
                 session=session,
                 target_id=target_id,

@@ -12,8 +12,10 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.darknet.adapters import get_darknet_adapter, normalize_darknet_adapter, suggest_adapter_for_detected
+from app.darknet.browser_state import apply_storage_state_to_cookie_jar, parse_storage_state
 from app.models import JobStatus, OnboardingStatus, ParseJob, ParserAccount, ParserType, RawEvent, Target, TargetAccountLink
 from app.plugins.base import JobSpec, ParsedEvent, ParserPlugin
+from app.services.job_routing import QUEUE_DARKNET, default_max_attempts_for_queue
 
 settings = get_settings()
 
@@ -32,6 +34,10 @@ def _unique(values: list[str]) -> list[str]:
 
 class DarknetPlugin(ParserPlugin):
     parser_type = ParserType.darknet.value
+
+    def _collect_maximum(self, target: Target) -> bool:
+        config = target.config or {}
+        return bool(config.get("collect_maximum", True))
 
     def _resolve_start_urls(self, target: Target) -> list[str]:
         config = target.config or {}
@@ -57,7 +63,7 @@ class DarknetPlugin(ParserPlugin):
         detected = str(config.get("adapter_detected", "")).strip()
         if detected:
             return suggest_adapter_for_detected(detected)
-        return "xenforo_like"
+        return "xenforo"
 
     def _requires_account(self, target: Target) -> bool:
         config = target.config or {}
@@ -69,7 +75,11 @@ class DarknetPlugin(ParserPlugin):
 
     def _thread_reparse_interval_minutes(self, target: Target) -> int:
         config = target.config or {}
-        return max(int(config.get("thread_reparse_interval_minutes", 60)), 1)
+        return max(int(config.get("thread_reparse_interval_minutes", 15)), 1)
+
+    def _discover_interval_seconds(self, target: Target) -> int:
+        config = target.config or {}
+        return max(int(config.get("discover_interval_seconds", 60)), 10)
 
     def _linked_accounts(self, session: Session, target: Target) -> list[ParserAccount]:
         rows = (
@@ -120,7 +130,7 @@ class DarknetPlugin(ParserPlugin):
         last_seen_map: dict[str, dt.datetime],
         now: dt.datetime,
     ) -> tuple[list[str], dict[str, int]]:
-        reparse_enabled = self._reparse_existing_threads(target)
+        reparse_enabled = self._reparse_existing_threads(target) or self._collect_maximum(target)
         interval_minutes = self._thread_reparse_interval_minutes(target)
         due_before = now - dt.timedelta(minutes=interval_minutes)
 
@@ -172,6 +182,7 @@ class DarknetPlugin(ParserPlugin):
 
         adapter_name = self._resolve_adapter_name(target)
         login_required = self._requires_account(target)
+        discover_interval_seconds = self._discover_interval_seconds(target)
 
         if login_required:
             accounts = self._linked_accounts(session, target)
@@ -190,7 +201,10 @@ class DarknetPlugin(ParserPlugin):
                         "stage": "discover_threads",
                         "adapter": adapter_name,
                         "start_urls": start_urls,
+                        "min_interval_seconds": discover_interval_seconds,
                     },
+                    queue=QUEUE_DARKNET,
+                    max_attempts=default_max_attempts_for_queue(QUEUE_DARKNET),
                 )
                 for account in accounts
             ]
@@ -206,15 +220,52 @@ class DarknetPlugin(ParserPlugin):
                     "stage": "discover_threads",
                     "adapter": adapter_name,
                     "start_urls": start_urls,
+                    "min_interval_seconds": discover_interval_seconds,
                 },
+                queue=QUEUE_DARKNET,
+                max_attempts=default_max_attempts_for_queue(QUEUE_DARKNET),
             )
         ]
 
-    async def _open_client(self):
-        connector = ProxyConnector.from_url(settings.tor_proxy)
-        timeout = aiohttp.ClientTimeout(total=60)
+    def _resolve_proxy_url(self, account: ParserAccount | None) -> str | None:
+        if account:
+            creds = account.credentials if isinstance(account.credentials, dict) else {}
+            raw = str(creds.get("proxy_url") or "").strip()
+            if raw:
+                lowered = raw.lower()
+                if lowered in {"none", "direct", "off"}:
+                    return None
+                if lowered != "default":
+                    return raw
+        default_proxy = str(settings.tor_proxy or "").strip()
+        return default_proxy or None
+
+    async def _open_client(self, account: ParserAccount | None = None, base_url: str | None = None):
+        proxy_url = self._resolve_proxy_url(account)
+        connector = ProxyConnector.from_url(proxy_url) if proxy_url else aiohttp.TCPConnector()
+        timeout = aiohttp.ClientTimeout(total=max(int(settings.darknet_http_timeout_seconds), 30))
         headers = {"User-Agent": "data-aggregator/0.2"}
-        return aiohttp.ClientSession(connector=connector, timeout=timeout, headers=headers)
+        storage_state: dict | None = None
+        if account and isinstance(account.credentials, dict):
+            browser_user_agent = str(account.credentials.get("browser_user_agent") or "").strip()
+            if browser_user_agent:
+                headers["User-Agent"] = browser_user_agent
+            auth_mode = str(account.credentials.get("auth_mode") or "").strip().lower()
+            raw_state = account.credentials.get("storage_state")
+            if raw_state is not None:
+                if auth_mode in {"browser_state", "storage_state", "cookies"}:
+                    storage_state = parse_storage_state(raw_state)
+                else:
+                    try:
+                        storage_state = parse_storage_state(raw_state)
+                    except Exception:
+                        storage_state = None
+
+        cookie_jar = aiohttp.CookieJar(unsafe=True)
+        client = aiohttp.ClientSession(connector=connector, timeout=timeout, headers=headers, cookie_jar=cookie_jar)
+        if base_url and storage_state:
+            apply_storage_state_to_cookie_jar(client.cookie_jar, base_url=base_url, storage_state=storage_state)
+        return client
 
     def _build_base_url(self, target: Target, start_urls: list[str]) -> str:
         if start_urls:
@@ -234,12 +285,12 @@ class DarknetPlugin(ParserPlugin):
         config = target.config or {}
         start_urls = payload.get("start_urls") or self._resolve_start_urls(target)
         adapter = get_darknet_adapter(str(payload.get("adapter") or self._resolve_adapter_name(target)))
+        base_url = self._build_base_url(target, start_urls)
 
-        async with await self._open_client() as client:
+        async with await self._open_client(account=account, base_url=base_url) as client:
             if self._requires_account(target):
                 if not account:
                     raise ValueError("Darknet target requires account authentication")
-                base_url = self._build_base_url(target, start_urls)
                 ok = await adapter.login(client, base_url, account.credentials or {})
                 if not ok:
                     raise ValueError(f"Darknet login failed for account '{account.label}'")
@@ -250,8 +301,16 @@ class DarknetPlugin(ParserPlugin):
         last_seen_map = self._load_last_thread_seen_map(session, target, thread_urls)
         candidate_threads, selection_stats = self._select_threads_for_parse(target, thread_urls, last_seen_map, now)
 
-        max_threads = max(int(config.get("max_threads_per_cycle", 30)), 1)
-        thread_urls_to_schedule = candidate_threads[:max_threads]
+        collect_maximum = self._collect_maximum(target)
+        if collect_maximum:
+            thread_urls_to_schedule = candidate_threads
+        else:
+            try:
+                max_threads = int(config.get("max_threads_per_cycle", 30))
+            except Exception:
+                max_threads = 30
+            max_threads = max(max_threads, 1)
+            thread_urls_to_schedule = candidate_threads[:max_threads]
 
         created = 0
         skipped = 0
@@ -275,6 +334,8 @@ class DarknetPlugin(ParserPlugin):
                     account_id=account.id if account else None,
                     owner_user_id=target.owner_user_id,
                     job_key=job_key,
+                    queue=QUEUE_DARKNET,
+                    max_attempts=default_max_attempts_for_queue(QUEUE_DARKNET),
                     status=JobStatus.pending,
                     run_after=_now_utc(),
                     payload={
@@ -309,6 +370,7 @@ class DarknetPlugin(ParserPlugin):
 
     async def _parse_thread_stage(
         self,
+        session: Session,
         target: Target,
         account: ParserAccount | None,
         payload: dict,
@@ -318,12 +380,12 @@ class DarknetPlugin(ParserPlugin):
         thread_url = str(payload.get("thread_url") or "").strip()
         if not thread_url:
             raise ValueError("Missing thread_url for darknet parse_thread stage")
+        base_url = self._build_base_url(target, [thread_url])
 
-        async with await self._open_client() as client:
+        async with await self._open_client(account=account, base_url=base_url) as client:
             if self._requires_account(target):
                 if not account:
                     raise ValueError("Darknet thread parsing requires account")
-                base_url = self._build_base_url(target, [thread_url])
                 ok = await adapter.login(client, base_url, account.credentials or {})
                 if not ok:
                     raise ValueError(f"Darknet login failed for account '{account.label}'")
@@ -376,6 +438,7 @@ class DarknetPlugin(ParserPlugin):
                     payload={
                         "event_type": "forum_user",
                         "thread_url": result.thread_url,
+                        "thread_title": result.thread_title,
                         "user": user,
                     },
                 )
@@ -409,6 +472,6 @@ class DarknetPlugin(ParserPlugin):
         if stage == "discover_threads":
             return asyncio.run(self._discover_stage(session, job, target, account))
         if stage == "parse_thread":
-            return asyncio.run(self._parse_thread_stage(target, account, payload))
+            return asyncio.run(self._parse_thread_stage(session, target, account, payload))
 
         raise ValueError(f"Unknown darknet job stage: {stage}")

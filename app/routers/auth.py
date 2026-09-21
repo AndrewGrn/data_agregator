@@ -29,6 +29,7 @@ def login(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Невірний 2FA код")
 
     request.session["user_id"] = user.id
+    request.session["session_version"] = int(user.session_version or 1)
     return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
 
 

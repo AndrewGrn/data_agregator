@@ -7,6 +7,7 @@ from app.models import User, UserRole
 
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     user_id = request.session.get("user_id")
+    session_version = request.session.get("session_version")
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Потрібна авторизація")
     user = db.get(User, user_id)
@@ -15,6 +16,14 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     if not bool(user.is_active):
         request.session.clear()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Користувач деактивований")
+    try:
+        current_session_version = int(session_version)
+    except (TypeError, ValueError):
+        request.session.clear()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Сесію відкликано, увійдіть повторно")
+    if int(user.session_version or 1) != current_session_version:
+        request.session.clear()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Сесію відкликано, увійдіть повторно")
     return user
 
 

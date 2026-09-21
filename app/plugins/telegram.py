@@ -33,6 +33,16 @@ def _parse_iso_datetime(value: str | None) -> dt.datetime | None:
     return _coerce_utc(parsed)
 
 
+def _entity_ref(identifier: str | int) -> str | int:
+    raw = str(identifier or "").strip()
+    if raw and raw.lstrip("-").isdigit():
+        try:
+            return int(raw)
+        except Exception:
+            return raw
+    return raw
+
+
 class TelegramPlugin(ParserPlugin):
     parser_type = ParserType.telegram.value
 
@@ -298,6 +308,7 @@ class TelegramPlugin(ParserPlugin):
         try:
             if not await client.is_user_authorized():
                 raise ValueError(f"Telegram account '{account.label}' is not authorized.")
+            entity = _entity_ref(identifier)
 
             messages: list[dict[str, Any]] = []
             root_post_ids: list[int] = []
@@ -312,7 +323,7 @@ class TelegramPlugin(ParserPlugin):
             if offset_id > 0:
                 iter_kwargs["offset_id"] = int(offset_id)
 
-            async for msg in client.iter_messages(identifier, **iter_kwargs):
+            async for msg in client.iter_messages(entity, **iter_kwargs):
                 msg_date = _coerce_utc(msg.date) if msg.date else None
                 if from_date and msg_date and msg_date < from_date:
                     break
@@ -352,7 +363,7 @@ class TelegramPlugin(ParserPlugin):
                 recheck_limit = max(int(comments_recheck_posts), 1)
                 known_root_ids = set(root_post_ids)
                 if recheck_limit > len(root_post_ids):
-                    async for root_msg in client.iter_messages(identifier, limit=recheck_limit):
+                    async for root_msg in client.iter_messages(entity, limit=recheck_limit):
                         known_root_ids.add(int(root_msg.id))
 
                 queue: list[tuple[int, int, int | None]] = [(root_id, 0, None) for root_id in known_root_ids]
@@ -366,7 +377,7 @@ class TelegramPlugin(ParserPlugin):
 
                     try:
                         comments = []
-                        async for cmt in client.iter_messages(identifier, reply_to=parent_id, limit=max(int(comments_limit), 1)):
+                        async for cmt in client.iter_messages(entity, reply_to=parent_id, limit=max(int(comments_limit), 1)):
                             comments.append(cmt)
                     except Exception:
                         continue
@@ -445,7 +456,7 @@ class TelegramPlugin(ParserPlugin):
         observed_at = dt.datetime.now(dt.UTC)
 
         try:
-            entity = await client.get_entity(identifier)
+            entity = await client.get_entity(_entity_ref(identifier))
             entity_id = getattr(entity, "id", None)
             chat_id = int(entity_id) if entity_id is not None else None
             if chat_id and chat_id > 0 and (getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False)):
@@ -500,12 +511,12 @@ class TelegramPlugin(ParserPlugin):
         offset_id = int(job.payload.get("offset_id", 0) or 0)
         config = target.config or {}
         comments_enabled = bool(config.get("comments_enabled", True))
-        if mode == "gap_fill" and not bool(config.get("gapfill_comments_enabled", False)):
+        if mode == "gap_fill" and not bool(config.get("gapfill_comments_enabled", True)):
             comments_enabled = False
         comments_limit = max(int(config.get("comments_limit", 20)), 1)
         comments_depth = max(int(config.get("comments_depth", 2)), 1)
         comments_recheck_posts = max(int(config.get("comments_recheck_posts", 30)), 1)
-        if is_backfill and not bool(config.get("backfill_comments_enabled", False)):
+        if is_backfill and not bool(config.get("backfill_comments_enabled", True)):
             comments_enabled = False
 
         if mode == "participants_sync":
@@ -614,7 +625,7 @@ class TelegramPlugin(ParserPlugin):
         try:
             if not await client.is_user_authorized():
                 return False
-            await client.get_entity(identifier)
+            await client.get_entity(_entity_ref(identifier))
             ok = True
         except Exception:
             ok = False

@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from enum import Enum
@@ -58,6 +59,24 @@ def _json_default(value):
     return str(value)
 
 
+def _safe_object_basename(external_id: str | None) -> str:
+    if not external_id:
+        return uuid.uuid4().hex
+
+    raw = str(external_id).strip()
+    if not raw:
+        return uuid.uuid4().hex
+
+    # Keep filenames stable but safe for local FS and object-store keys.
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("._-")
+    if not normalized:
+        normalized = "event"
+    if len(normalized) > 96:
+        normalized = normalized[:96]
+    suffix = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+    return f"{normalized}_{suffix}"
+
+
 class ObjectStore:
     def __init__(self) -> None:
         self.settings = settings
@@ -95,11 +114,12 @@ class ObjectStore:
         digest = hashlib.sha256(payload_bytes).hexdigest()
         size = len(payload_bytes)
         preview = _build_preview(payload)
+        object_basename = _safe_object_basename(external_id)
 
         if self._client:
             try:
                 self._ensure_bucket()
-                key = f"raw/{parser_type}/target_{target_id}/{external_id or uuid.uuid4().hex}.json"
+                key = f"raw/{parser_type}/target_{target_id}/{object_basename}.json"
                 self._client.put_object(
                     Bucket=self.settings.s3_bucket,
                     Key=key,
@@ -118,7 +138,7 @@ class ObjectStore:
                 # Fallback for local/dev mode when MinIO is temporarily unavailable.
                 pass
 
-        local_path = self.local_dir / f"{parser_type}_target_{target_id}_{external_id or uuid.uuid4().hex}.json"
+        local_path = self.local_dir / f"{parser_type}_target_{target_id}_{object_basename}.json"
         local_path.write_bytes(payload_bytes)
         return StoredObject(
             storage_type="local",

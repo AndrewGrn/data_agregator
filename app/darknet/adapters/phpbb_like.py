@@ -15,6 +15,13 @@ def _text(value) -> str:
 class PhpbbLikeAdapter(DarknetForumAdapter):
     name = "phpbb_like"
 
+    @staticmethod
+    def _limit_value(config: dict, key: str, default: int) -> int:
+        try:
+            return int(config.get(key, default))
+        except Exception:
+            return int(default)
+
     async def _fetch_html(self, client, url: str) -> str:
         async with client.get(url, allow_redirects=True) as response:
             return await response.text(errors="ignore")
@@ -29,7 +36,27 @@ class PhpbbLikeAdapter(DarknetForumAdapter):
             hidden[name] = str(node.get("value") or "")
         return hidden
 
+    async def _is_authenticated(self, client, base_url: str, account_credentials: dict) -> bool:
+        check_path = str((account_credentials or {}).get("auth_check_path") or "/").strip() or "/"
+        check_url = urljoin(base_url, check_path)
+        html = await self._fetch_html(client, check_url)
+        if not html:
+            return False
+        lower = html.lower()
+        if "mode=logout" in lower or "logout" in lower:
+            return True
+        return "mode=login" not in lower and "ucp.php?mode=login" not in lower
+
     async def login(self, client, base_url: str, account_credentials: dict) -> bool:
+        auth_mode = str((account_credentials or {}).get("auth_mode") or "").strip().lower()
+        if auth_mode in {"browser_state", "storage_state", "cookies"}:
+            authenticated = await self._is_authenticated(client, base_url, account_credentials or {})
+            if authenticated:
+                return True
+            fallback_form_login = bool((account_credentials or {}).get("fallback_form_login", False))
+            if not fallback_form_login:
+                return False
+
         username = (account_credentials or {}).get("username", "").strip()
         password = (account_credentials or {}).get("password", "").strip()
         if not username or not password:
@@ -89,16 +116,35 @@ class PhpbbLikeAdapter(DarknetForumAdapter):
 
     async def discover_thread_urls(self, client, start_urls: list[str], config: dict) -> list[str]:
         thread_url_contains = str(config.get("thread_url_contains", "/viewtopic.php")).strip() or "/viewtopic.php"
+        collect_maximum = bool(config.get("collect_maximum", True))
+        if collect_maximum:
+            max_discover_pages_per_start = 5000
+        else:
+            raw = self._limit_value(config, "max_discover_pages_per_start", 20)
+            max_discover_pages_per_start = 5000 if raw <= 0 else min(max(raw, 1), 5000)
+
         links: list[str] = []
         if not start_urls:
             return links
 
         base_host = urlparse(start_urls[0]).netloc
         for url in start_urls:
-            html = await self._fetch_html(client, url)
-            for thread_url in self._extract_thread_links(html, url, thread_url_contains, base_host):
-                if thread_url not in links:
-                    links.append(thread_url)
+            page_url = url
+            visited_pages: set[str] = set()
+            while page_url and len(visited_pages) < max_discover_pages_per_start:
+                if page_url in visited_pages:
+                    break
+                visited_pages.add(page_url)
+
+                html = await self._fetch_html(client, page_url)
+                for thread_url in self._extract_thread_links(html, page_url, thread_url_contains, base_host):
+                    if thread_url not in links:
+                        links.append(thread_url)
+
+                next_url = self._find_next_page(html, page_url)
+                if next_url and not self._is_same_host(base_host, next_url):
+                    break
+                page_url = next_url
         return links
 
     def _find_next_page(self, html: str, current_url: str) -> str | None:
@@ -156,8 +202,15 @@ class PhpbbLikeAdapter(DarknetForumAdapter):
         return thread_title, posts, users
 
     async def parse_thread(self, client, thread_url: str, config: dict) -> ParsedThreadResult:
-        max_pages = max(int(config.get("max_pages_per_thread", 1)), 1)
-        max_posts = max(int(config.get("max_posts_per_thread", 500)), 1)
+        collect_maximum = bool(config.get("collect_maximum", True))
+        if collect_maximum:
+            max_pages = 100000
+            max_posts = 1000000
+        else:
+            raw_pages = self._limit_value(config, "max_pages_per_thread", 1)
+            raw_posts = self._limit_value(config, "max_posts_per_thread", 500)
+            max_pages = 100000 if raw_pages <= 0 else min(max(raw_pages, 1), 100000)
+            max_posts = 1000000 if raw_posts <= 0 else min(max(raw_posts, 1), 1000000)
 
         page_url = thread_url
         visited: set[str] = set()

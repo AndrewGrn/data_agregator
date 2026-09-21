@@ -12,6 +12,7 @@
 - Telegram hybrid-режим: live listener + polling/backfill
 - Профілі Telegram-користувачів і членство в групах (`telegram_users`, `telegram_memberships`, history)
 - Зберігання raw payload в S3/MinIO (в Postgres тільки посилання + метадані)
+- Повнотекстовий пошук через OpenSearch (індексація Telegram/Darknet повідомлень)
 - Health-score і rate-limit для Telegram акаунтів
 - Backfill planner по діапазону дат (чанки)
 - Alembic-міграції та версіонування схеми
@@ -52,8 +53,10 @@ docker compose watch
 4. Відкрий UI:
 
 - React UI: http://localhost:5173/login
+- React UI через Traefik-домен: http://aggredata.localhost/login
 - Legacy UI: http://localhost:8000/login
 - логін/пароль за замовчуванням: `admin` / `admin123`
+- Traefik dashboard: http://localhost:8081
 
 Сервіси в compose:
 
@@ -64,6 +67,7 @@ docker compose watch
 - `telegram-listener`
 - `db` (PostgreSQL)
 - `minio` (S3 API + console `:9001`)
+- `opensearch` (`:9200`)
 - `torproxy`
 
 ## Міграції Alembic
@@ -85,6 +89,17 @@ python -m app.cli db-revision --message "add new field" --autogenerate
 ```bash
 python -m app.cli generate-telegram-session --api-id <API_ID> --api-hash <API_HASH> --phone <PHONE>
 ```
+
+## Darknet browser auth helper (captcha-friendly)
+
+Для форумів з капчею (наприклад XenForo) використовуй `browser_state`:
+
+1. У UI `/darknet` створи helper-команду в блоці `Локальний helper авторизації`.
+2. Запусти команду локально. Вона відкриє Playwright.
+3. Увійди вручну (логін/пароль/капча) і закрий вікно Playwright.
+4. Скрипт автоматично завантажить `storageState` (cookies + localStorage) в акаунт.
+
+Локальний скрипт: `scripts/darknet_auth_helper.py`
 
 ## Backfill
 
@@ -138,6 +153,9 @@ Scheduler створить backfill-jobs по чанках часу.
 - `GET /api/telegram/targets-overview`
 - `GET /api/telegram/targets/{target_id}/messages`
 - `GET /api/telegram/targets/{target_id}/users`
+- `GET /api/search/status`
+- `GET /api/search/messages`
+- `POST /api/search/reindex`
 - `GET /api/jobs`
 - `GET /api/events`
 - `GET /api/events/{event_id}/payload`

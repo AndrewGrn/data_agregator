@@ -34,7 +34,7 @@ class AdapterDetectionResult:
 
 
 SIGNATURES: dict[str, list[str]] = {
-    "xenforo_like": [
+    "xenforo": [
         "data-xf-init",
         "_xftoken",
         "p-title-value",
@@ -103,7 +103,7 @@ async def detect_adapter(start_urls: list[str], max_urls: int = 3) -> AdapterDet
     if not urls:
         return AdapterDetectionResult(
             detected=None,
-            recommended_adapter="xenforo_like",
+            recommended_adapter="xenforo",
             scores={name: 0 for name in SIGNATURES},
             matches={name: [] for name in SIGNATURES},
             checked_urls=[],

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Iterable
 from urllib.parse import urljoin, urlparse
 
@@ -13,11 +14,23 @@ def _text(value) -> str:
 
 
 class XenForoLikeAdapter(DarknetForumAdapter):
-    name = "xenforo_like"
+    name = "xenforo"
+
+    @staticmethod
+    def _limit_value(config: dict, key: str, default: int) -> int:
+        try:
+            return int(config.get(key, default))
+        except Exception:
+            return int(default)
+
+    async def _fetch_html_with_meta(self, client, url: str) -> tuple[str, int, str]:
+        async with client.get(url, allow_redirects=True) as response:
+            html = await response.text(errors="ignore")
+            return html, int(response.status), str(response.url)
 
     async def _fetch_html(self, client, url: str) -> str:
-        async with client.get(url, allow_redirects=True) as response:
-            return await response.text(errors="ignore")
+        html, _, _ = await self._fetch_html_with_meta(client, url)
+        return html
 
     def _extract_xf_token(self, html: str) -> str | None:
         soup = BeautifulSoup(html, "html.parser")
@@ -26,7 +39,31 @@ class XenForoLikeAdapter(DarknetForumAdapter):
             return str(token_input["value"])
         return None
 
+    async def _is_authenticated(self, client, base_url: str, account_credentials: dict) -> bool:
+        check_path = str((account_credentials or {}).get("auth_check_path") or "/").strip() or "/"
+        check_url = urljoin(base_url, check_path)
+        html = await self._fetch_html(client, check_url)
+        if not html:
+            return False
+        lower = html.lower()
+        if 'data-template="login"' in lower:
+            return False
+        if "p-navgroup-link--register" in lower and "/login/register" in lower:
+            return False
+        if "logout" in lower or "log out" in lower:
+            return True
+        return "data-xf-init" in lower and "login" not in str(urlparse(check_url).path).lower()
+
     async def login(self, client, base_url: str, account_credentials: dict) -> bool:
+        auth_mode = str((account_credentials or {}).get("auth_mode") or "").strip().lower()
+        if auth_mode in {"browser_state", "storage_state", "cookies"}:
+            authenticated = await self._is_authenticated(client, base_url, account_credentials or {})
+            if authenticated:
+                return True
+            fallback_form_login = bool((account_credentials or {}).get("fallback_form_login", False))
+            if not fallback_form_login:
+                return False
+
         username = (account_credentials or {}).get("username", "").strip()
         password = (account_credentials or {}).get("password", "").strip()
         if not username or not password:
@@ -74,10 +111,16 @@ class XenForoLikeAdapter(DarknetForumAdapter):
             href = node.get("href")
             if not href:
                 continue
-            absolute = urljoin(page_url, href)
+            absolute = urljoin(page_url, href).split("#", 1)[0]
+            if not absolute:
+                continue
             if thread_url_contains not in absolute:
                 continue
             if not self._is_same_host(base_host, absolute):
+                continue
+            # Keep only real thread URLs, skip anchors/menu URLs like /threads/#top.
+            path = urlparse(absolute).path or ""
+            if not re.search(r"/threads/(?:[^/?#]*\.)?\d+(?:/|$)", path):
                 continue
             if absolute not in links:
                 links.append(absolute)
@@ -85,17 +128,60 @@ class XenForoLikeAdapter(DarknetForumAdapter):
 
     async def discover_thread_urls(self, client, start_urls: list[str], config: dict) -> list[str]:
         thread_url_contains = str(config.get("thread_url_contains", "/threads/")).strip() or "/threads/"
+        collect_maximum = bool(config.get("collect_maximum", True))
+        if collect_maximum:
+            max_discover_pages_per_start = 5000
+        else:
+            raw = self._limit_value(config, "max_discover_pages_per_start", 20)
+            max_discover_pages_per_start = 5000 if raw <= 0 else min(max(raw, 1), 5000)
+
         links: list[str] = []
         if not start_urls:
             return links
 
         base_host = urlparse(start_urls[0]).netloc
+        crawled_roots: set[str] = set()
+
+        async def _crawl(start_url: str) -> int:
+            page_url = start_url
+            visited_pages: set[str] = set()
+            added = 0
+
+            while page_url and len(visited_pages) < max_discover_pages_per_start:
+                if page_url in visited_pages:
+                    break
+                visited_pages.add(page_url)
+
+                html, _, final_url = await self._fetch_html_with_meta(client, page_url)
+                current_url = final_url or page_url
+                extracted = self._extract_thread_links(html, current_url, thread_url_contains, base_host)
+                for thread_url in extracted:
+                    if thread_url not in links:
+                        links.append(thread_url)
+                        added += 1
+
+                next_url = self._find_next_page(html, current_url)
+                if next_url and not self._is_same_host(base_host, next_url):
+                    break
+                page_url = next_url
+
+            return added
 
         for url in start_urls:
-            html = await self._fetch_html(client, url)
-            for thread_url in self._extract_thread_links(html, url, thread_url_contains, base_host):
-                if thread_url not in links:
-                    links.append(thread_url)
+            added_on_url = await _crawl(url)
+
+            # XenForo installations may return 404 on /threads/ while valid thread pages still exist.
+            # Fallback to forum root if this start URL yields nothing.
+            if added_on_url > 0:
+                continue
+            parsed = urlparse(url)
+            if not parsed.scheme or not parsed.netloc:
+                continue
+            root_url = f"{parsed.scheme}://{parsed.netloc}/"
+            if root_url in crawled_roots:
+                continue
+            crawled_roots.add(root_url)
+            await _crawl(root_url)
         return links
 
     def _find_next_page(self, html: str, current_url: str) -> str | None:
@@ -138,8 +224,15 @@ class XenForoLikeAdapter(DarknetForumAdapter):
         return thread_title, posts, users
 
     async def parse_thread(self, client, thread_url: str, config: dict) -> ParsedThreadResult:
-        max_pages = max(int(config.get("max_pages_per_thread", 1)), 1)
-        max_posts = max(int(config.get("max_posts_per_thread", 500)), 1)
+        collect_maximum = bool(config.get("collect_maximum", True))
+        if collect_maximum:
+            max_pages = 100000
+            max_posts = 1000000
+        else:
+            raw_pages = self._limit_value(config, "max_pages_per_thread", 1)
+            raw_posts = self._limit_value(config, "max_posts_per_thread", 500)
+            max_pages = 100000 if raw_pages <= 0 else min(max(raw_pages, 1), 100000)
+            max_posts = 1000000 if raw_posts <= 0 else min(max(raw_posts, 1), 1000000)
 
         page_url = thread_url
         visited: set[str] = set()
