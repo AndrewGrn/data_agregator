@@ -24,6 +24,32 @@ def _now_utc() -> dt.datetime:
     return dt.datetime.now(dt.UTC)
 
 
+def normalize_darknet_payload(payload: dict) -> dict:
+    """Map a darknet forum payload onto the shared ParsedEvent fields."""
+    event_type = str(payload.get("event_type") or "darknet_event")
+
+    author = str(payload.get("author") or "").strip()
+    if not author:
+        user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+        author = str(user.get("username") or "").strip()
+
+    text = "\n".join(
+        chunk for chunk in [
+            str(payload.get("thread_title") or "").strip(),
+            str(payload.get("content") or payload.get("text") or "").strip(),
+        ] if chunk
+    ).strip()
+
+    return {
+        "text": text or None,
+        "author_id": author or None,
+        "author_label": author or None,
+        "event_kind": "post" if event_type == "forum_post" else event_type,
+        "thread_id": str(payload.get("thread_url") or "") or None,
+        "reply_to": None,
+    }
+
+
 def _unique(values: list[str]) -> list[str]:
     out: list[str] = []
     for item in values:
@@ -349,22 +375,24 @@ class DarknetPlugin(ParserPlugin):
             created += 1
 
         deferred_by_limit = max(0, len(candidate_threads) - len(thread_urls_to_schedule))
+        discovery_payload = {
+            "event_type": "darknet_discovery",
+            "target_id": target.id,
+            "account_id": account.id if account else None,
+            "thread_urls_found": len(thread_urls),
+            "thread_urls_selected": len(candidate_threads),
+            "jobs_created": created,
+            "jobs_skipped": skipped,
+            "deferred_by_limit": deferred_by_limit,
+            **selection_stats,
+            "threads": thread_urls_to_schedule,
+        }
         return [
             ParsedEvent(
                 external_id=f"discover:{target.id}:{now.isoformat()}",
                 observed_at=now,
-                payload={
-                    "event_type": "darknet_discovery",
-                    "target_id": target.id,
-                    "account_id": account.id if account else None,
-                    "thread_urls_found": len(thread_urls),
-                    "thread_urls_selected": len(candidate_threads),
-                    "jobs_created": created,
-                    "jobs_skipped": skipped,
-                    "deferred_by_limit": deferred_by_limit,
-                    **selection_stats,
-                    "threads": thread_urls_to_schedule,
-                },
+                payload=discovery_payload,
+                **normalize_darknet_payload(discovery_payload),
             )
         ]
 
@@ -405,20 +433,22 @@ class DarknetPlugin(ParserPlugin):
             if external_id in existing_post_ids:
                 skipped_existing_posts += 1
                 continue
+            post_payload = {
+                "event_type": "forum_post",
+                "thread_url": result.thread_url,
+                "thread_title": result.thread_title,
+                "post_id": post.post_id,
+                "author": post.author,
+                "posted_at": post.posted_at,
+                "text": post.text,
+                "raw": post.raw,
+            }
             events.append(
                 ParsedEvent(
                     external_id=external_id,
                     observed_at=_now_utc(),
-                    payload={
-                        "event_type": "forum_post",
-                        "thread_url": result.thread_url,
-                        "thread_title": result.thread_title,
-                        "post_id": post.post_id,
-                        "author": post.author,
-                        "posted_at": post.posted_at,
-                        "text": post.text,
-                        "raw": post.raw,
-                    },
+                    payload=post_payload,
+                    **normalize_darknet_payload(post_payload),
                 )
             )
             new_posts_count += 1
@@ -431,16 +461,18 @@ class DarknetPlugin(ParserPlugin):
             if external_id in existing_user_ids:
                 skipped_existing_users += 1
                 continue
+            user_payload = {
+                "event_type": "forum_user",
+                "thread_url": result.thread_url,
+                "thread_title": result.thread_title,
+                "user": user,
+            }
             events.append(
                 ParsedEvent(
                     external_id=external_id,
                     observed_at=_now_utc(),
-                    payload={
-                        "event_type": "forum_user",
-                        "thread_url": result.thread_url,
-                        "thread_title": result.thread_title,
-                        "user": user,
-                    },
+                    payload=user_payload,
+                    **normalize_darknet_payload(user_payload),
                 )
             )
             new_users_count += 1

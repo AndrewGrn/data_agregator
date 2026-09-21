@@ -57,3 +57,42 @@ def test_missing_sender_does_not_raise():
 
     assert fields["author_id"] is None
     assert fields["author_label"] is None
+
+
+from app.plugins.darknet import normalize_darknet_payload
+
+
+def test_forum_post_maps_title_and_body():
+    fields = normalize_darknet_payload(
+        {
+            "event_type": "forum_post",
+            "thread_url": "https://f.onion/threads/1/",
+            "thread_title": "Заголовок",
+            "post_id": "p1",
+            "author": "alice",
+            "content": "тело поста",
+        }
+    )
+
+    assert fields["event_kind"] == "post"
+    assert fields["author_id"] == "alice"
+    assert fields["author_label"] == "alice"
+    assert fields["thread_id"] == "https://f.onion/threads/1/"
+    assert "Заголовок" in fields["text"]
+    assert "тело поста" in fields["text"]
+
+
+def test_discovery_event_has_no_text():
+    fields = normalize_darknet_payload({"event_type": "darknet_discovery", "target_id": 1})
+
+    assert fields["text"] is None
+    assert fields["event_kind"] == "darknet_discovery"
+
+
+def test_forum_user_event_keeps_username_as_author():
+    fields = normalize_darknet_payload(
+        {"event_type": "forum_user", "thread_url": "https://f.onion/t/2/", "user": {"username": "bob"}}
+    )
+
+    assert fields["author_id"] == "bob"
+    assert fields["event_kind"] == "forum_user"
