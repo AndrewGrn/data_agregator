@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     s3_bucket: str = "raw-events"
     s3_region: str = "us-east-1"
     s3_use_ssl: bool = False
+    media_max_bytes: int = 52428800  # 50 MB
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
