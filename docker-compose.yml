@@ -239,8 +239,39 @@ services:
         - action: rebuild
           path: Dockerfile
 
+  whatsapp-bridge:
+    build: ./whatsapp-bridge
+    environment:
+      NATS_URL: nats://nats:4222
+      DATABASE_URL_PG: postgresql://postgres:postgres@db:5432/aggregator
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_BUCKET: raw-events
+      S3_ACCESS_KEY: minio
+      S3_SECRET_KEY: miniosecret
+      MEDIA_MAX_BYTES: 52428800
+    depends_on:
+      - nats
+      - db
+      - minio
+    volumes:
+      - wa_sessions:/sessions
+    restart: unless-stopped
+
+  whatsapp-listener:
+    build: .
+    env_file:
+      - .env
+    depends_on:
+      - nats
+      - db
+    command: sh -c "python -m app.cli db-upgrade && python -m app.cli run-whatsapp-listener"
+    volumes:
+      - raw_data:/app/data/raw
+    restart: unless-stopped
+
 volumes:
   pgdata:
   nats_data:
   minio_data:
   raw_data:
+  wa_sessions:

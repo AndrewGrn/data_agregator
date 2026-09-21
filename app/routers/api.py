@@ -3,6 +3,7 @@ import asyncio
 import re
 import secrets
 import shlex
+import uuid
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
@@ -32,6 +33,7 @@ from app.models import (
     RawEvent,
     RawEventFile,
     RegistrationToken,
+    ServiceState,
     Target,
     TargetAccountLink,
     TelegramMembership,
@@ -41,7 +43,12 @@ from app.models import (
     UserRole,
 )
 from app.plugins.registry import plugin_registry
-from app.schemas import CreateAccountRequest, CreateTargetRequest, LinkAccountRequest
+from app.schemas import (
+    CreateAccountRequest,
+    CreateTargetRequest,
+    CreateWhatsappAccountRequest,
+    LinkAccountRequest,
+)
 from app.security import (
     build_totp_uri,
     generate_registration_token,
@@ -1046,6 +1053,53 @@ def list_accounts(db: Session = Depends(get_db), user=Depends(get_current_user))
         }
         for a in accounts
     ]
+
+
+@router.post("/whatsapp/accounts")
+def create_whatsapp_account(
+    payload: CreateWhatsappAccountRequest,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    account = ParserAccount(
+        parser_type="whatsapp",
+        label=payload.label.strip(),
+        owner_user_id=user.id,
+        credentials={"session_id": str(uuid.uuid4())},
+    )
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+    # ponytail: the bridge only reads parser_accounts at startup, so this new
+    # account is invisible to it until whatsapp-bridge restarts; a
+    # wa.control.reload subject would let it pick the account up live.
+    return {
+        "id": account.id,
+        "label": account.label,
+        "status": "pending",
+        "message": "Акаунт створено. Перезапустіть whatsapp-bridge, щоб з'явився QR-код.",
+    }
+
+
+@router.get("/whatsapp/accounts/{account_id}/status")
+def whatsapp_account_status(
+    account_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    account = db.get(ParserAccount, int(account_id))
+    if account is None or account.parser_type != "whatsapp":
+        raise HTTPException(status_code=404, detail="Акаунт не знайдено")
+    _ensure_account_access(account, user)
+
+    state = db.get(ServiceState, f"wa_session_{int(account_id)}")
+    if state is None:
+        return {"status": "pending", "qr_data_url": None, "updated_at": None}
+    return {
+        "status": state.value.get("status", "pending"),
+        "qr_data_url": state.value.get("qr_data_url"),
+        "updated_at": state.value.get("updated_at"),
+    }
 
 
 @router.get("/dashboard")

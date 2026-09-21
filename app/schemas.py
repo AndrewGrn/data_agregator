@@ -27,3 +27,7 @@ class CreateAccountRequest(BaseModel):
 class LinkAccountRequest(BaseModel):
     target_id: int
     account_id: int
+
+
+class CreateWhatsappAccountRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=128)

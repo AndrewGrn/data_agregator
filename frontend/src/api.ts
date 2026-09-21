@@ -240,3 +240,24 @@ export type EventFile = {
 export async function fetchEventFiles(eventId: number): Promise<EventFile[]> {
   return apiGet<EventFile[]>(`/api/events/${eventId}/files`);
 }
+
+export type WhatsappAccountCreated = {
+  id: number;
+  label: string;
+  status: string;
+  message: string;
+};
+
+export type WhatsappAccountStatus = {
+  status: string;
+  qr_data_url: string | null;
+  updated_at: string | null;
+};
+
+export async function createWhatsappAccount(label: string): Promise<WhatsappAccountCreated> {
+  return apiPost<WhatsappAccountCreated>("/api/whatsapp/accounts", { label });
+}
+
+export async function fetchWhatsappStatus(accountId: number): Promise<WhatsappAccountStatus> {
+  return apiGet<WhatsappAccountStatus>(`/api/whatsapp/accounts/${accountId}/status`);
+}

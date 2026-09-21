@@ -1,11 +1,31 @@
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import EventFile, RawEvent, RawEventFile, Target
 from app.plugins.base import FileRef, ParsedEvent
+
+logger = logging.getLogger(__name__)
+
+# Postgres error code for a unique-key violation (our dedup path). Anything
+# else caught here — most importantly a foreign-key violation on account_id,
+# which arrives over the wire from external bridges (e.g. WhatsApp) and can't
+# be trusted the way our own database-generated ids can — must be logged
+# instead of silently disappearing.
+_UNIQUE_VIOLATION_PGCODE = "23505"
+
+
+def _is_duplicate_violation(exc: IntegrityError) -> bool:
+    """Only true for a duplicate-key violation, never a foreign-key one."""
+    pgcode = getattr(exc.orig, "pgcode", None)
+    if pgcode is not None:
+        return pgcode == _UNIQUE_VIOLATION_PGCODE
+    # sqlite (unit tests) has no pgcode; fall back to the driver's message.
+    return "unique" in str(exc.orig).lower()
 
 
 def _link_files(session: Session, raw_event_id: int, files: list[FileRef]) -> None:
@@ -102,7 +122,17 @@ def persist_events(
             with session.begin_nested():
                 session.add(raw_event)
                 session.flush()
-        except IntegrityError:
+        except IntegrityError as exc:
+            if not _is_duplicate_violation(exc):
+                logger.warning(
+                    "persist_events: insert rejected for parser_type=%s target_id=%s "
+                    "external_id=%s account_id=%s: %s",
+                    parser_type,
+                    target.id,
+                    event.external_id,
+                    account_id,
+                    exc.orig,
+                )
             continue
 
         if event.files:

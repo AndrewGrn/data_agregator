@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import logging
 
 from sqlalchemy import select
 
 from app.db import SessionLocal
-from app.models import Target
+from app.models import ServiceState, Target
 from app.plugins.whatsapp import map_wa_event
 from app.services.event_sink import persist_events
-from app.services.whatsapp_bus import consume_events
+from app.services.whatsapp_bus import consume_events, consume_statuses
 
 logger = logging.getLogger(__name__)
 
@@ -45,5 +46,21 @@ async def _handle(message: dict) -> None:
         session.commit()
 
 
+async def _handle_status(account_id: str, payload: dict) -> None:
+    """Mirror one wa.status.<account_id> message into service_state."""
+    with SessionLocal() as session:
+        key = f"wa_session_{account_id}"
+        state = session.get(ServiceState, key)
+        value = {**payload, "updated_at": dt.datetime.now(dt.UTC).isoformat()}
+        if state is None:
+            session.add(ServiceState(key=key, value=value))
+        else:
+            state.value = value
+        session.commit()
+
+
 def run_whatsapp_listener() -> None:
-    asyncio.run(consume_events(_handle))
+    async def _main() -> None:
+        await asyncio.gather(consume_events(_handle), consume_statuses(_handle_status))
+
+    asyncio.run(_main())

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 
+import pytest
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base, make_engine
@@ -181,3 +183,28 @@ def test_payload_with_datetime_and_bytes_round_trips():
     stored = session.query(RawEvent).one()
     assert stored.payload["raw"]["date"] == moment.isoformat()
     assert stored.payload["raw"]["photo"] == "binary"
+
+
+@pytest.mark.postgres
+def test_fk_violation_is_logged_not_silently_dropped(pg_session, caplog):
+    """A bogus account_id (e.g. from a misconfigured bridge) must be logged,
+    not swallowed by the same handler that quietly skips duplicates."""
+    target = Target(parser_type="whatsapp", name="chat", identifier="123@c.us")
+    pg_session.add(target)
+    pg_session.commit()
+
+    with caplog.at_level(logging.WARNING):
+        written = persist_events(
+            pg_session,
+            target=target,
+            parser_type="whatsapp",
+            account_id=999999,  # no such parser_accounts row
+            owner_user_id=None,
+            events=[_event("wa-1")],
+        )
+
+    assert written == []
+    assert pg_session.query(RawEvent).count() == 0
+    assert any(record.levelno >= logging.WARNING for record in caplog.records)
+    assert "wa-1" in caplog.text
+    assert "999999" in caplog.text

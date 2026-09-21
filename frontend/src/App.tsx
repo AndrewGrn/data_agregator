@@ -10,6 +10,7 @@ import { LoginPage } from "./pages/LoginPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { RegisterPage } from "./pages/RegisterPage";
 import { TelegramPage } from "./pages/TelegramPage";
+import { WhatsappPage } from "./pages/WhatsappPage";
 
 type NavItem = {
   to: string;
@@ -20,6 +21,7 @@ type NavItem = {
 const navItems: NavItem[] = [
   { to: "/", label: "Панель" },
   { to: "/telegram", label: "Telegram" },
+  { to: "/whatsapp", label: "WhatsApp" },
   { to: "/darknet", label: "Darknet" },
   { to: "/data", label: "Дані" },
   { to: "/profile", label: "Кабінет" },
@@ -120,6 +122,16 @@ export function App() {
           <Protected>
             <Shell>
               <TelegramPage />
+            </Shell>
+          </Protected>
+        }
+      />
+      <Route
+        path="/whatsapp"
+        element={
+          <Protected>
+            <Shell>
+              <WhatsappPage />
             </Shell>
           </Protected>
         }

@@ -21,6 +21,7 @@ settings = get_settings()
 SUBJECT_EVENTS = "wa.events.*"
 # Core NATS, no stream: worthless after the fact (backfill requests, QR/status).
 SUBJECT_BACKFILL_PREFIX = "wa.backfill"
+SUBJECT_STATUS = "wa.status.*"
 
 
 async def _connect() -> NATS:
@@ -105,5 +106,25 @@ async def consume_events(handler: Callable[[dict], Awaitable[None]]) -> None:
                     logger.exception("wa-bus handler failed, message will redeliver")
                     continue
                 await message.ack()
+    finally:
+        await nc.close()
+
+
+async def consume_statuses(handler: Callable[[str, dict], Awaitable[None]]) -> None:
+    """Mirror bridge session state (QR codes, ready/disconnected) forever.
+
+    Core NATS, no JetStream: a status message missed while this process is
+    down is just a stale service_state row until the bridge's next event,
+    not lost data worth replaying.
+    """
+    nc = await _connect()
+    try:
+        subscription = await nc.subscribe(SUBJECT_STATUS)
+        async for message in subscription.messages:
+            account_id = message.subject.rsplit(".", 1)[-1]
+            try:
+                await handler(account_id, json.loads(message.data.decode("utf-8")))
+            except Exception:
+                logger.exception("wa-status handler failed for account %s", account_id)
     finally:
         await nc.close()

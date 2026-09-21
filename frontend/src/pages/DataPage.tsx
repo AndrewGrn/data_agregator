@@ -1604,6 +1604,7 @@ export function DataPage() {
                       <p className="text-xs text-muted-foreground">{msg.observed_at_text}</p>
                     </div>
                     <p className="whitespace-pre-wrap text-sm">{msg.text}</p>
+                    <MessageAttachments eventId={msg.id} />
                     <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                       <Badge variant="outline">{msg.message_kind}</Badge>
                       <span>ID події: {msg.id}</span>
