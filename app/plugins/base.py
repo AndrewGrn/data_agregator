@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy.orm import Session
 
@@ -21,10 +21,28 @@ class JobSpec:
 
 
 @dataclass(slots=True)
+class FileRef:
+    """Attachment reference. sha256 is set when the file is already in S3."""
+
+    source_ref: str
+    filename: str | None = None
+    mime: str | None = None
+    size: int | None = None
+    sha256: str | None = None
+
+
+@dataclass(slots=True)
 class ParsedEvent:
     external_id: str | None
     observed_at: dt.datetime | None
     payload: dict
+    text: str | None = None
+    author_id: str | None = None
+    author_label: str | None = None
+    event_kind: str = "message"
+    thread_id: str | None = None
+    reply_to: str | None = None
+    files: list[FileRef] = field(default_factory=list)
 
 
 class ParserPlugin:

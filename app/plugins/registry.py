@@ -19,6 +19,9 @@ class PluginRegistry:
     def list_types(self) -> list[str]:
         return sorted(self._plugins.keys())
 
+    def is_known(self, parser_type: str) -> bool:
+        return str(parser_type) in self._plugins
+
 
 plugin_registry = PluginRegistry()
 plugin_registry.register(TelegramPlugin())
