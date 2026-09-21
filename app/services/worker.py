@@ -9,7 +9,6 @@ import time
 import uuid
 
 from sqlalchemy import func, or_, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -23,9 +22,8 @@ from app.services.job_routing import (
     QUEUE_WEB,
     resolve_job_queue,
 )
-from app.services.object_store import object_store
 from app.services.darknet_profiles import upsert_darknet_profile_from_event
-from app.services.search_index import search_index
+from app.services.event_sink import persist_events
 from app.services.telegram_accounts import account_parallel_limits
 from app.services.telegram_offsets import update_offset_from_message
 from app.services.telegram_profiles import upsert_telegram_profile_from_event
@@ -312,101 +310,44 @@ def _process_job(session: Session, job: ParseJob) -> None:
         events = plugin.run(session, job, target, account)
         max_telegram_message_id: int | None = None
         max_telegram_observed_at: dt.datetime | None = None
-        external_ids = [event.external_id for event in events if event.external_id]
-        existing_external_ids: set[str] = set()
-        existing_raw_events_by_external_id: dict[str, RawEvent] = {}
+        # persist_events dedups the write itself; this set only decides which
+        # events count as new for profile counters and telegram offsets.
+        external_ids = [str(event.external_id) for event in events if event.external_id]
+        seen_external_ids: set[str] = set()
         if external_ids:
-            rows = (
-                session.execute(
-                    select(RawEvent).where(
-                        RawEvent.parser_type == job.parser_type,
-                        RawEvent.target_id == job.target_id,
-                        RawEvent.external_id.in_(external_ids),
-                    )
+            rows = session.execute(
+                select(RawEvent.external_id).where(
+                    RawEvent.parser_type == job.parser_type,
+                    RawEvent.target_id == job.target_id,
+                    RawEvent.external_id.in_(external_ids),
                 )
-                .all()
-            )
-            for (raw_event,) in rows:
-                if not raw_event.external_id:
-                    continue
-                external_id = str(raw_event.external_id)
-                existing_external_ids.add(external_id)
-                existing_raw_events_by_external_id[external_id] = raw_event
+            ).all()
+            seen_external_ids = {str(row[0]) for row in rows if row[0]}
+
+        persist_events(
+            session,
+            target=target,
+            parser_type=job.parser_type,
+            account_id=job.account_id,
+            owner_user_id=job.owner_user_id,
+            events=events,
+        )
 
         for event in events:
-            if event.external_id and event.external_id in existing_external_ids:
-                if is_darknet_job:
-                    payload = event.payload if isinstance(event.payload, dict) else {}
-                    existing_raw_event = existing_raw_events_by_external_id.get(str(event.external_id))
-                    if existing_raw_event is not None and isinstance(payload, dict):
-                        # Self-heal payload_ref if the old object was lost and this event is re-emitted.
-                        existing_payload = object_store.get_json(existing_raw_event)
-                        if not isinstance(existing_payload, dict):
-                            stored = object_store.put_json(
-                                parser_type=job.parser_type,
-                                target_id=job.target_id,
-                                payload=payload,
-                                external_id=event.external_id,
-                            )
-                            existing_raw_event.storage_type = stored.storage_type
-                            existing_raw_event.payload_ref = stored.payload_ref
-                            existing_raw_event.payload_sha256 = stored.payload_sha256
-                            existing_raw_event.payload_size = stored.payload_size
-                            existing_raw_event.payload_preview = stored.payload_preview
-                            existing_raw_event.payload = stored.payload_inline
-                            if event.observed_at:
-                                existing_raw_event.observed_at = event.observed_at
-                            search_index.index_raw_event(event=existing_raw_event, payload=payload, target=target)
-                    upsert_darknet_profile_from_event(
-                        session=session,
-                        target_id=job.target_id,
-                        target_identifier=str(target.identifier or ""),
-                        account_id=job.account_id,
-                        payload=payload,
-                        observed_at=event.observed_at,
-                        increment_post_counter=False,
-                    )
-                continue
-            stored = object_store.put_json(
-                parser_type=job.parser_type,
-                target_id=job.target_id,
-                payload=event.payload,
-                external_id=event.external_id,
-            )
-            try:
-                # Savepoint prevents a duplicate insert race from failing the whole job.
-                with session.begin_nested():
-                    raw_event = RawEvent(
-                        parser_type=job.parser_type,
-                        target_id=job.target_id,
-                        account_id=job.account_id,
-                        owner_user_id=job.owner_user_id if job.owner_user_id is not None else target.owner_user_id,
-                        external_id=event.external_id,
-                        observed_at=event.observed_at,
-                        storage_type=stored.storage_type,
-                        payload_ref=stored.payload_ref,
-                        payload_sha256=stored.payload_sha256,
-                        payload_size=stored.payload_size,
-                        payload_preview=stored.payload_preview,
-                        payload=stored.payload_inline,
-                    )
-                    session.add(raw_event)
-                    session.flush()
-            except IntegrityError:
-                if is_darknet_job:
-                    payload = event.payload if isinstance(event.payload, dict) else {}
-                    upsert_darknet_profile_from_event(
-                        session=session,
-                        target_id=job.target_id,
-                        target_identifier=str(target.identifier or ""),
-                        account_id=job.account_id,
-                        payload=payload,
-                        observed_at=event.observed_at,
-                        increment_post_counter=False,
-                    )
-                continue
-            search_index.index_raw_event(event=raw_event, payload=event.payload if isinstance(event.payload, dict) else {}, target=target)
-            if is_telegram_job:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            external_id = str(event.external_id) if event.external_id else ""
+            is_new = not (external_id and external_id in seen_external_ids)
+            if is_darknet_job:
+                upsert_darknet_profile_from_event(
+                    session=session,
+                    target_id=job.target_id,
+                    target_identifier=str(target.identifier or ""),
+                    account_id=job.account_id,
+                    payload=payload,
+                    observed_at=event.observed_at,
+                    increment_post_counter=is_new,
+                )
+            elif is_telegram_job and is_new:
                 upsert_telegram_profile_from_event(
                     session=session,
                     target_id=job.target_id,
@@ -414,7 +355,6 @@ def _process_job(session: Session, job: ParseJob) -> None:
                     payload=event.payload,
                     observed_at=event.observed_at,
                 )
-                payload = event.payload if isinstance(event.payload, dict) else {}
                 if str(payload.get("event_type") or "") == "telegram_message":
                     raw_message_id = payload.get("message_id")
                     if raw_message_id is not None:
@@ -428,18 +368,8 @@ def _process_job(session: Session, job: ParseJob) -> None:
                             max_telegram_observed_at is None or event.observed_at > max_telegram_observed_at
                         ):
                             max_telegram_observed_at = event.observed_at
-            elif is_darknet_job:
-                payload = event.payload if isinstance(event.payload, dict) else {}
-                upsert_darknet_profile_from_event(
-                    session=session,
-                    target_id=job.target_id,
-                    target_identifier=str(target.identifier or ""),
-                    account_id=job.account_id,
-                    payload=payload,
-                    observed_at=event.observed_at,
-                )
-            if event.external_id:
-                existing_external_ids.add(event.external_id)
+            if external_id:
+                seen_external_ids.add(external_id)
         if is_telegram_job and account_id is not None and max_telegram_message_id is not None:
             update_offset_from_message(
                 session=session,

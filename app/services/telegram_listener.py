@@ -6,13 +6,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
-from app.models import ParserAccount, ParserType, RawEvent, Target, TargetAccountLink
-from app.services.object_store import object_store
-from app.services.search_index import search_index
+from app.models import ParserAccount, ParserType, Target, TargetAccountLink
+from app.plugins.base import ParsedEvent
+from app.plugins.telegram import normalize_telegram_payload
+from app.services.event_sink import persist_events
 from app.services.telegram_offsets import update_offset_from_message
 from app.services.telegram_profiles import upsert_telegram_profile_from_event
 from app.services.telegram_accounts import normalize_telegram_identifier
@@ -243,64 +243,24 @@ class TelegramHybridListener:
     ) -> None:
         with self._session_factory() as session:
             target = session.get(Target, target_id)
-            target_owner_id = target.owner_user_id if target else None
-            exists = session.execute(
-                select(RawEvent.id).where(
-                    RawEvent.parser_type == ParserType.telegram,
-                    RawEvent.target_id == target_id,
-                    RawEvent.external_id == external_id,
-                )
-            ).scalar_one_or_none()
-            if exists:
-                upsert_telegram_profile_from_event(
-                    session=session,
-                    target_id=target_id,
-                    account_id=account_id,
-                    payload=payload,
-                    observed_at=observed_at,
-                )
-                try:
-                    message_id = int(external_id)
-                    update_offset_from_message(
-                        session=session,
-                        target_id=target_id,
-                        account_id=account_id,
-                        message_id=message_id,
-                        observed_at=observed_at,
-                        source="listener",
-                    )
-                except Exception:
-                    pass
+            if target is None:
                 return
 
-            stored = object_store.put_json(
+            persist_events(
+                session,
+                target=target,
                 parser_type=ParserType.telegram.value,
-                target_id=target_id,
-                payload=payload,
-                external_id=external_id,
-            )
-            try:
-                # Another process may write the same external_id concurrently.
-                with session.begin_nested():
-                    raw_event = RawEvent(
-                        parser_type=ParserType.telegram,
-                        target_id=target_id,
-                        account_id=account_id,
-                        owner_user_id=target_owner_id,
+                account_id=account_id,
+                owner_user_id=target.owner_user_id,
+                events=[
+                    ParsedEvent(
                         external_id=external_id,
                         observed_at=observed_at,
-                        storage_type=stored.storage_type,
-                        payload_ref=stored.payload_ref,
-                        payload_sha256=stored.payload_sha256,
-                        payload_size=stored.payload_size,
-                        payload_preview=stored.payload_preview,
-                        payload=stored.payload_inline,
+                        payload=payload,
+                        **normalize_telegram_payload(payload),
                     )
-                    session.add(raw_event)
-                    session.flush()
-            except IntegrityError:
-                return
-            search_index.index_raw_event(event=raw_event, payload=payload, target=target)
+                ],
+            )
             upsert_telegram_profile_from_event(
                 session=session,
                 target_id=target_id,
@@ -320,6 +280,7 @@ class TelegramHybridListener:
                 )
             except Exception:
                 pass
+            session.commit()
 
     async def _handle_message(self, account_id: int, event) -> None:
         runtime = self._states.get(account_id)
