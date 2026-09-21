@@ -154,7 +154,6 @@
           <th>Час події (Київ)</th>
           <th>External ID</th>
           <th>Прев’ю</th>
-          <th>Розмір</th>
           <th>Дія</th>
         </tr>
       </thead>
@@ -171,7 +170,6 @@
           <td>{{ row.observed_at_text }}</td>
           <td>{{ row.external_id }}</td>
           <td>{{ row.preview_text }}</td>
-          <td>{{ row.payload_size or '-' }}</td>
           <td>
             <a
               class="btn-link btn-small"
@@ -184,7 +182,7 @@
         {% endfor %}
         {% if rows|length == 0 %}
         <tr>
-          <td colspan="9">Подій за вибраним фільтром не знайдено.</td>
+          <td colspan="8">Подій за вибраним фільтром не знайдено.</td>
         </tr>
         {% endif %}
       </tbody>
@@ -197,7 +195,7 @@
 {% if selected_event %}
 <section class="card">
   <h3>Payload події #{{ selected_event.id }}</h3>
-  <p class="hint">Тип: {{ selected_event.parser_type }} | storage: {{ selected_event.storage_type }} | created: {{ selected_event.created_at }}</p>
+  <p class="hint">Тип: {{ selected_event.parser_type }} | created: {{ selected_event.created_at }}</p>
   <pre class="payload-pre">{{ selected_payload_pretty }}</pre>
 </section>
 {% endif %}

@@ -36,7 +36,6 @@ from app.models import (
     TelegramUser,
 )
 from app.plugins.registry import plugin_registry
-from app.services.object_store import object_store
 from app.services.scheduler import schedule_once, schedule_target_once, sync_telegram_memberships
 from app.services.telegram_accounts import (
     account_parallel_limits,
@@ -513,13 +512,12 @@ def parsed_data_page(
     for event in events:
         target = target_lookup.get(event.target_id)
         account = account_lookup.get(event.account_id) if event.account_id else None
-        preview = dict(event.payload_preview or {})
+        preview = event.payload if isinstance(event.payload, dict) else {}
         preview_text = str(preview.get("text") or "")
 
         if query_text:
             haystack_parts = [
                 str(event.external_id or ""),
-                str(event.payload_ref or ""),
                 str(preview_text),
                 str(target.name if target else ""),
                 str(target.identifier if target else ""),
@@ -537,9 +535,6 @@ def parsed_data_page(
                 "target_identifier": target.identifier if target else "-",
                 "account_label": account.label if account else (str(event.account_id) if event.account_id else "-"),
                 "external_id": event.external_id or "-",
-                "storage_type": event.storage_type,
-                "payload_size": event.payload_size,
-                "payload_ref": event.payload_ref,
                 "preview_text": preview_text or "-",
                 "created_at_text": _format_kyiv_datetime(event.created_at),
                 "observed_at_text": _format_kyiv_datetime(event.observed_at),
@@ -558,7 +553,7 @@ def parsed_data_page(
             if target_id and candidate and candidate.target_id != int(target_id):
                 candidate = None
         if candidate:
-            payload = object_store.get_json(candidate)
+            payload = candidate.payload
             selected_event = candidate
             if payload is not None:
                 selected_payload_pretty = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
@@ -629,7 +624,7 @@ def parsed_data_page(
 
             chat_items: list[dict] = []
             for event in tg_events:
-                payload = event.payload if isinstance(event.payload, dict) else object_store.get_json(event)
+                payload = event.payload
                 if not isinstance(payload, dict):
                     continue
 

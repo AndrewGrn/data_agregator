@@ -49,7 +49,6 @@ from app.security import (
     verify_password,
     verify_totp_code,
 )
-from app.services.object_store import object_store
 from app.services.darknet_profiles import upsert_darknet_profile_from_event
 from app.services.search_autosync import get_search_autosync_state
 from app.services.search_index import search_index
@@ -1907,9 +1906,7 @@ def darknet_recent_events(
 
     result: list[dict] = []
     for event in rows:
-        payload = event.payload if isinstance(event.payload, dict) else object_store.get_json(event)
-        if not isinstance(payload, dict):
-            payload = event.payload_preview if isinstance(event.payload_preview, dict) else {}
+        payload = event.payload
         event_type = str(payload.get("event_type") or "").strip()
         if not event_type:
             external_id = str(event.external_id or "")
@@ -3346,7 +3343,7 @@ def reindex_messages_search(payload: dict | None = None, db: Session = Depends(g
             skipped += 1
             continue
 
-        event_payload = event.payload if isinstance(event.payload, dict) else object_store.get_json(event)
+        event_payload = event.payload
         ok = search_index.index_raw_event(
             event=event,
             payload=event_payload if isinstance(event_payload, dict) else {},
@@ -3396,7 +3393,7 @@ def telegram_target_messages(
 
     result: list[dict] = []
     for event in events:
-        payload = event.payload if isinstance(event.payload, dict) else object_store.get_json(event)
+        payload = event.payload
         if not isinstance(payload, dict):
             continue
         event_type = str(payload.get("event_type") or "")
@@ -4053,7 +4050,7 @@ def telegram_target_intel_extract(
     usernames_stats: dict[str, dict] = {}
     scanned_events = 0
     for event in events:
-        payload_dict = event.payload if isinstance(event.payload, dict) else object_store.get_json(event)
+        payload_dict = event.payload
         if not isinstance(payload_dict, dict):
             continue
         event_type = str(payload_dict.get("event_type") or "")
@@ -4185,7 +4182,7 @@ def telegram_user_profile(
         )
 
         for event in events:
-            payload = event.payload if isinstance(event.payload, dict) else object_store.get_json(event)
+            payload = event.payload
             if not isinstance(payload, dict):
                 continue
             event_type = str(payload.get("event_type") or "")
@@ -4425,7 +4422,7 @@ def darknet_user_profile(
         )
 
         for event in events:
-            payload = event.payload if isinstance(event.payload, dict) else object_store.get_json(event)
+            payload = event.payload
             if not isinstance(payload, dict):
                 continue
             if str(payload.get("event_type") or "") != "forum_post":
@@ -4532,7 +4529,7 @@ def darknet_profiles_rebuild(payload: dict | None = None, db: Session = Depends(
         target_identifier = target_identifier_by_id.get(int(event.target_id))
         if not target_identifier:
             continue
-        event_payload = event.payload if isinstance(event.payload, dict) else object_store.get_json(event)
+        event_payload = event.payload
         if not isinstance(event_payload, dict):
             continue
         processed += 1
@@ -4583,11 +4580,6 @@ def list_events(limit: int = 100, db: Session = Depends(get_db), user=Depends(ge
             "account_id": e.account_id,
             "owner_user_id": e.owner_user_id,
             "external_id": e.external_id,
-            "storage_type": e.storage_type,
-            "payload_ref": e.payload_ref,
-            "payload_size": e.payload_size,
-            "payload_sha256": e.payload_sha256,
-            "payload_preview": e.payload_preview,
             "created_at": e.created_at.isoformat() if e.created_at else None,
         }
         for e in events
@@ -4597,7 +4589,4 @@ def list_events(limit: int = 100, db: Session = Depends(get_db), user=Depends(ge
 @router.get("/events/{event_id}/payload")
 def get_event_payload(event_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
     event = _ensure_event_access(db, db.get(RawEvent, event_id), user)
-    payload = object_store.get_json(event)
-    if payload is None:
-        raise HTTPException(status_code=404, detail="payload not available")
-    return {"id": event.id, "payload": payload}
+    return {"id": event.id, "payload": event.payload}

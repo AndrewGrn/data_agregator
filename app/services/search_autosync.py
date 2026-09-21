@@ -7,7 +7,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import RawEvent, ServiceState, Target
-from app.services.object_store import object_store
 from app.services.search_index import search_index
 
 STATE_KEY = "opensearch_autosync_v1"
@@ -61,14 +60,7 @@ def _max_raw_event_id(session: Session) -> int:
 
 
 def _load_event_payload(event: RawEvent) -> dict[str, Any] | None:
-    if isinstance(event.payload, dict) and event.payload:
-        return event.payload
-    loaded = object_store.get_json(event)
-    if isinstance(loaded, dict) and loaded:
-        return loaded
-    if isinstance(event.payload_preview, dict) and event.payload_preview:
-        return event.payload_preview
-    return None
+    return event.payload if isinstance(event.payload, dict) and event.payload else None
 
 
 def autosync_search_index_batch(session: Session, batch_size: int = 1000) -> dict[str, Any]:

@@ -147,52 +147,6 @@ class MessageSearchIndex:
             return f"{parser_type}:{int(event.target_id)}:{external_id}"
         return f"{parser_type}:event:{int(event.id)}"
 
-    def _payload_from_preview(self, event: RawEvent) -> dict[str, Any] | None:
-        preview = event.payload_preview if isinstance(event.payload_preview, dict) else {}
-        if not preview:
-            return None
-
-        parser_type = getattr(event.parser_type, "value", str(event.parser_type))
-        if parser_type == "telegram":
-            raw_event_type = str(preview.get("event_type") or "").strip().lower()
-            message_id = preview.get("message_id")
-            text_value = str(preview.get("text") or "").strip()
-            if raw_event_type in {"telegram_message", "telegram_comment"}:
-                event_type = raw_event_type
-            elif message_id is not None or text_value:
-                event_type = "telegram_message"
-            else:
-                return None
-            payload: dict[str, Any] = {"event_type": event_type}
-            if message_id is not None:
-                try:
-                    payload["message_id"] = int(message_id)
-                except Exception:
-                    payload["message_id"] = message_id
-            date_raw = preview.get("date")
-            if date_raw:
-                payload["date"] = date_raw
-            if text_value:
-                payload["text"] = text_value
-            return payload
-
-        if parser_type == "darknet":
-            text_value = str(preview.get("text") or "").strip()
-            title = str(preview.get("title") or "").strip()
-            if not text_value and not title:
-                return None
-            payload = {"event_type": str(preview.get("event_type") or "darknet_event")}
-            if title:
-                payload["title"] = title
-            if text_value:
-                payload["text"] = text_value
-            url = preview.get("url")
-            if url:
-                payload["url"] = url
-            return payload
-
-        return None
-
     def _normalize_payload_for_index(self, event: RawEvent, payload: dict[str, Any] | None) -> dict[str, Any] | None:
         if isinstance(payload, dict) and payload:
             parser_type = getattr(event.parser_type, "value", str(event.parser_type))
@@ -212,7 +166,7 @@ class MessageSearchIndex:
                     synthesized["event_type"] = "darknet_event"
                     return synthesized
 
-        return self._payload_from_preview(event)
+        return None
 
     def _build_doc(self, event: RawEvent, payload: dict[str, Any] | None, target: Target | None) -> dict[str, Any] | None:
         parser_type = getattr(event.parser_type, "value", str(event.parser_type))
