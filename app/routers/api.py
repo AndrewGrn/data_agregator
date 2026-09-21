@@ -943,7 +943,7 @@ def admin_resources(db: Session = Depends(get_db), user=Depends(get_current_admi
             {
                 "id": item.id,
                 "label": item.label,
-                "parser_type": item.parser_type.value,
+                "parser_type": item.parser_type,
                 "owner_user_id": item.owner_user_id,
                 "owner_username": usernames.get(int(item.owner_user_id)) if item.owner_user_id else None,
                 "is_active": bool(item.is_active),
@@ -955,7 +955,7 @@ def admin_resources(db: Session = Depends(get_db), user=Depends(get_current_admi
                 "id": item.id,
                 "name": item.name,
                 "identifier": item.identifier,
-                "parser_type": item.parser_type.value,
+                "parser_type": item.parser_type,
                 "owner_user_id": item.owner_user_id,
                 "owner_username": usernames.get(int(item.owner_user_id)) if item.owner_user_id else None,
                 "is_active": bool(item.is_active),
@@ -982,7 +982,7 @@ def list_targets(db: Session = Depends(get_db), user=Depends(get_current_user)):
     return [
         {
             "id": item.id,
-            "parser_type": item.parser_type.value,
+            "parser_type": item.parser_type,
             "name": item.name,
             "identifier": item.identifier,
             "owner_user_id": item.owner_user_id,
@@ -1030,7 +1030,7 @@ def list_accounts(db: Session = Depends(get_db), user=Depends(get_current_user))
     return [
         {
             "id": a.id,
-            "parser_type": a.parser_type.value,
+            "parser_type": a.parser_type,
             "label": a.label,
             "owner_user_id": a.owner_user_id,
             "is_active": a.is_active,
@@ -3263,9 +3263,9 @@ def search_messages(
 
     if target_id is not None:
         target = _ensure_target_access(db.get(Target, int(target_id)), user)
-        if parser_filter and target.parser_type.value != parser_filter:
+        if parser_filter and target.parser_type != parser_filter:
             raise HTTPException(status_code=400, detail="target_id не відповідає parser_type")
-        parser_filter = target.parser_type.value
+        parser_filter = target.parser_type
 
     status = search_index.status()
     if not bool(status.get("enabled")):
@@ -4558,7 +4558,7 @@ def list_jobs(limit: int = 100, db: Session = Depends(get_db), user=Depends(get_
     return [
         {
             "id": j.id,
-            "parser_type": j.parser_type.value,
+            "parser_type": j.parser_type,
             "target_id": j.target_id,
             "account_id": j.account_id,
             "owner_user_id": j.owner_user_id,
@@ -4578,7 +4578,7 @@ def list_events(limit: int = 100, db: Session = Depends(get_db), user=Depends(ge
     return [
         {
             "id": e.id,
-            "parser_type": e.parser_type.value,
+            "parser_type": e.parser_type,
             "target_id": e.target_id,
             "account_id": e.account_id,
             "owner_user_id": e.owner_user_id,

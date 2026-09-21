@@ -532,7 +532,7 @@ def parsed_data_page(
         rows.append(
             {
                 "id": event.id,
-                "parser_type": event.parser_type.value,
+                "parser_type": event.parser_type,
                 "target_name": target.name if target else f"Ціль #{event.target_id}",
                 "target_identifier": target.identifier if target else "-",
                 "account_label": account.label if account else (str(event.account_id) if event.account_id else "-"),

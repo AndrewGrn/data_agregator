@@ -197,7 +197,7 @@
 {% if selected_event %}
 <section class="card">
   <h3>Payload події #{{ selected_event.id }}</h3>
-  <p class="hint">Тип: {{ selected_event.parser_type.value }} | storage: {{ selected_event.storage_type }} | created: {{ selected_event.created_at }}</p>
+  <p class="hint">Тип: {{ selected_event.parser_type }} | storage: {{ selected_event.storage_type }} | created: {{ selected_event.created_at }}</p>
   <pre class="payload-pre">{{ selected_payload_pretty }}</pre>
 </section>
 {% endif %}

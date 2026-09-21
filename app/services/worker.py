@@ -58,7 +58,7 @@ def _job_lock_minutes(job: ParseJob) -> int:
 
 def _job_parallel_limit(job: ParseJob, account: ParserAccount | None) -> int:
     queue = _effective_job_queue(job)
-    if account and account.parser_type.value == "telegram":
+    if account and account.parser_type == "telegram":
         parallel_jobs, backfill_parallel_jobs = account_parallel_limits(
             account=account,
             default_parallel_jobs=settings.telegram_parallel_jobs_per_account,
@@ -208,7 +208,7 @@ def _recover_stale_running_jobs(session: Session) -> int:
     for job in running_jobs:
         lock_expired = bool(job.lock_expires_at and job.lock_expires_at < now)
         telegram_soft_stale = bool(
-            job.parser_type.value == "telegram"
+            job.parser_type == "telegram"
             and job.updated_at
             and job.updated_at < telegram_stale_before
         )
@@ -289,7 +289,7 @@ def _fail_job(session: Session, job: ParseJob, error: str) -> None:
 def _process_job(session: Session, job: ParseJob) -> None:
     job_id = int(job.id)
     account_id = int(job.account_id) if job.account_id is not None else None
-    parser_type_value = job.parser_type.value
+    parser_type_value = job.parser_type
     is_telegram_job = parser_type_value == "telegram"
     is_darknet_job = parser_type_value == "darknet"
 
@@ -343,7 +343,7 @@ def _process_job(session: Session, job: ParseJob) -> None:
                         existing_payload = object_store.get_json(existing_raw_event)
                         if not isinstance(existing_payload, dict):
                             stored = object_store.put_json(
-                                parser_type=job.parser_type.value,
+                                parser_type=job.parser_type,
                                 target_id=job.target_id,
                                 payload=payload,
                                 external_id=event.external_id,
@@ -368,7 +368,7 @@ def _process_job(session: Session, job: ParseJob) -> None:
                     )
                 continue
             stored = object_store.put_json(
-                parser_type=job.parser_type.value,
+                parser_type=job.parser_type,
                 target_id=job.target_id,
                 payload=event.payload,
                 external_id=event.external_id,

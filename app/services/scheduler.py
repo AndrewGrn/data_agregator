@@ -82,7 +82,7 @@ def _enqueue_job_specs(session: Session, target: Target, job_specs) -> tuple[int
 
 
 def schedule_target_once(session: Session, target: Target) -> dict:
-    plugin = plugin_registry.get(target.parser_type.value)
+    plugin = plugin_registry.get(target.parser_type)
     job_specs = plugin.generate_jobs(session, target)
     created, skipped = _enqueue_job_specs(session, target, job_specs)
     dispatch = dispatch_due_jobs(session=session, target_id=int(target.id))
@@ -104,7 +104,7 @@ def schedule_once(session: Session, owner_user_id: int | None = None) -> dict:
     skipped_existing = 0
 
     for target in targets:
-        plugin = plugin_registry.get(target.parser_type.value)
+        plugin = plugin_registry.get(target.parser_type)
         job_specs = plugin.generate_jobs(session, target)
         target_created, target_skipped = _enqueue_job_specs(session, target, job_specs)
         created += target_created
@@ -222,7 +222,7 @@ def dispatch_due_jobs(
                 "payload": {
                     "job_id": int(job.id),
                     "queue": str(job.queue or "").strip().lower(),
-                    "parser_type": job.parser_type.value,
+                    "parser_type": job.parser_type,
                     "target_id": int(job.target_id),
                     "account_id": int(job.account_id) if job.account_id is not None else None,
                     "attempt": int(job.attempt or 0),

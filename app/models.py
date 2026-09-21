@@ -15,11 +15,26 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    TypeDecorator,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+
+
+class ParserTypeStr(TypeDecorator):
+    """String column accepting both ParserType members and plain strings.
+
+    ParserType is `(str, Enum)`, not StrEnum, so str() on a member yields
+    "ParserType.telegram". Coercing on bind keeps the stored value plain.
+    """
+
+    impl = String(32)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        return getattr(value, "value", value)
 
 
 class ParserType(str, enum.Enum):
@@ -100,7 +115,7 @@ class ParserAccount(Base):
     __tablename__ = "parser_accounts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    parser_type: Mapped[ParserType] = mapped_column(Enum(ParserType), index=True)
+    parser_type: Mapped[str] = mapped_column(ParserTypeStr, index=True)
     label: Mapped[str] = mapped_column(String(128), unique=True)
     owner_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     credentials: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -123,7 +138,7 @@ class Target(Base):
     __tablename__ = "targets"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    parser_type: Mapped[ParserType] = mapped_column(Enum(ParserType), index=True)
+    parser_type: Mapped[str] = mapped_column(ParserTypeStr, index=True)
     name: Mapped[str] = mapped_column(String(128))
     identifier: Mapped[str] = mapped_column(String(512), index=True)
     owner_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
@@ -160,7 +175,7 @@ class ParseJob(Base):
     __tablename__ = "parse_jobs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    parser_type: Mapped[ParserType] = mapped_column(Enum(ParserType), index=True)
+    parser_type: Mapped[str] = mapped_column(ParserTypeStr, index=True)
     target_id: Mapped[int] = mapped_column(ForeignKey("targets.id", ondelete="CASCADE"), index=True)
     account_id: Mapped[int | None] = mapped_column(ForeignKey("parser_accounts.id", ondelete="SET NULL"), nullable=True)
     owner_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
@@ -191,7 +206,7 @@ class RawEvent(Base):
     __tablename__ = "raw_events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    parser_type: Mapped[ParserType] = mapped_column(Enum(ParserType), index=True)
+    parser_type: Mapped[str] = mapped_column(ParserTypeStr, index=True)
     target_id: Mapped[int] = mapped_column(ForeignKey("targets.id", ondelete="CASCADE"), index=True)
     account_id: Mapped[int | None] = mapped_column(ForeignKey("parser_accounts.id", ondelete="SET NULL"), nullable=True)
     owner_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)

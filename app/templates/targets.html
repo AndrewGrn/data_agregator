@@ -68,13 +68,13 @@
     <label>Ціль</label>
     <select name="target_id">
       {% for t in targets %}
-      <option value="{{ t.id }}">{{ t.id }} | {{ t.name }} | {{ t.parser_type.value }}</option>
+      <option value="{{ t.id }}">{{ t.id }} | {{ t.name }} | {{ t.parser_type }}</option>
       {% endfor %}
     </select>
     <label>Акаунт</label>
     <select name="account_id">
       {% for a in accounts %}
-      <option value="{{ a.id }}">{{ a.id }} | {{ a.label }} | {{ a.parser_type.value }}</option>
+      <option value="{{ a.id }}">{{ a.id }} | {{ a.label }} | {{ a.parser_type }}</option>
       {% endfor %}
     </select>
     <button type="submit">Прив’язати</button>
@@ -101,7 +101,7 @@
       {% for t in targets %}
       <tr>
         <td>{{ t.id }}</td>
-        <td>{{ t.parser_type.value }}</td>
+        <td>{{ t.parser_type }}</td>
         <td>{{ t.name }}</td>
         <td>{{ t.identifier }}</td>
         <td>{{ t.onboarding_status.value }}</td>
