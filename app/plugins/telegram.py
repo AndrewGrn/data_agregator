@@ -43,6 +43,51 @@ def _entity_ref(identifier: str | int) -> str | int:
     return raw
 
 
+def normalize_telegram_payload(item: dict) -> dict:
+    """Map a Telegram message dict onto the shared ParsedEvent fields."""
+    sender = item.get("sender") if isinstance(item.get("sender"), dict) else {}
+
+    sender_id = sender.get("id")
+    author_id = str(sender_id) if sender_id is not None else None
+
+    username = str(sender.get("username") or "").strip().removeprefix("@")
+    full_name = " ".join(
+        part for part in [
+            str(sender.get("first_name") or "").strip(),
+            str(sender.get("last_name") or "").strip(),
+        ] if part
+    ).strip()
+    if username:
+        author_label = f"@{username}"
+    elif full_name:
+        author_label = full_name
+    elif author_id:
+        author_label = f"ID {author_id}"
+    else:
+        author_label = None
+
+    is_comment = str(item.get("event_type") or "") == "telegram_comment"
+    root_post_id = item.get("root_post_id")
+    parent_message_id = item.get("parent_message_id")
+    chat_id = item.get("chat_id")
+
+    if is_comment and root_post_id is not None:
+        thread_id = str(root_post_id)
+    elif chat_id is not None:
+        thread_id = str(chat_id)
+    else:
+        thread_id = None
+
+    return {
+        "text": str(item.get("text") or "") or None,
+        "author_id": author_id,
+        "author_label": author_label,
+        "event_kind": "comment" if is_comment else "message",
+        "thread_id": thread_id,
+        "reply_to": str(parent_message_id) if parent_message_id is not None else None,
+    }
+
+
 class TelegramPlugin(ParserPlugin):
     parser_type = ParserType.telegram.value
 
@@ -607,6 +652,7 @@ class TelegramPlugin(ParserPlugin):
                     external_id=external_id,
                     observed_at=observed_at,
                     payload=item,
+                    **normalize_telegram_payload(item),
                 )
             )
         return events
