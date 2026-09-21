@@ -2,17 +2,16 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.db import Base
+from app.db import Base, make_engine
 from app.models import RawEvent, Target
 from app.plugins.base import ParsedEvent
 from app.services.event_sink import persist_events
 
 
 def _session():
-    engine = create_engine("sqlite+pysqlite:///:memory:")
+    engine = make_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()
 
@@ -152,3 +151,33 @@ def test_savepoint_absorbs_race_and_batch_survives():
     assert len(duplicate_rows) == 1
     assert duplicate_rows[0].text == "hello"  # original row untouched by the race loser
     assert session.query(RawEvent).filter_by(external_id="2").count() == 1
+
+
+def test_payload_with_datetime_and_bytes_round_trips():
+    """Telethon leaves datetime/bytes in msg.to_dict(); the engine's
+    json_serializer must encode them instead of raising TypeError."""
+    session = _session()
+    target = _target(session)
+    moment = dt.datetime(2026, 9, 21, 12, 0, tzinfo=dt.UTC)
+
+    persist_events(
+        session,
+        target=target,
+        parser_type="telegram",
+        account_id=None,
+        owner_user_id=None,
+        events=[
+            ParsedEvent(
+                external_id="42",
+                observed_at=moment,
+                payload={"raw": {"date": moment, "photo": b"binary"}},
+                text="hi",
+            )
+        ],
+    )
+    session.commit()
+    session.expire_all()
+
+    stored = session.query(RawEvent).one()
+    assert stored.payload["raw"]["date"] == moment.isoformat()
+    assert stored.payload["raw"]["photo"] == "binary"
