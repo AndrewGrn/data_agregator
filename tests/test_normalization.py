@@ -96,3 +96,25 @@ def test_forum_user_event_keeps_username_as_author():
 
     assert fields["author_id"] == "bob"
     assert fields["event_kind"] == "forum_user"
+
+
+def test_thread_summary_event_has_no_author_but_keeps_title_as_text():
+    fields = normalize_darknet_payload(
+        {
+            "event_type": "thread_summary",
+            "thread_url": "https://f.onion/threads/3/",
+            "thread_title": "Сводка треда",
+            "posts_count": 5,
+            "users_count": 2,
+            "new_posts_count": 1,
+            "new_users_count": 0,
+            "skipped_existing_posts": 4,
+            "skipped_existing_users": 2,
+        }
+    )
+
+    assert fields["event_kind"] == "thread_summary"
+    assert fields["thread_id"] == "https://f.onion/threads/3/"
+    assert fields["text"] == "Сводка треда"
+    assert fields["author_id"] is None
+    assert fields["author_label"] is None

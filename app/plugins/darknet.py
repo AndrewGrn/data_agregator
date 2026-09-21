@@ -477,21 +477,23 @@ class DarknetPlugin(ParserPlugin):
             )
             new_users_count += 1
 
+        summary_payload = {
+            "event_type": "thread_summary",
+            "thread_url": result.thread_url,
+            "thread_title": result.thread_title,
+            "posts_count": len(result.posts),
+            "users_count": len(result.users),
+            "new_posts_count": new_posts_count,
+            "new_users_count": new_users_count,
+            "skipped_existing_posts": skipped_existing_posts,
+            "skipped_existing_users": skipped_existing_users,
+        }
         events.append(
             ParsedEvent(
                 external_id=f"thread_summary:{result.thread_url}",
                 observed_at=_now_utc(),
-                payload={
-                    "event_type": "thread_summary",
-                    "thread_url": result.thread_url,
-                    "thread_title": result.thread_title,
-                    "posts_count": len(result.posts),
-                    "users_count": len(result.users),
-                    "new_posts_count": new_posts_count,
-                    "new_users_count": new_users_count,
-                    "skipped_existing_posts": skipped_existing_posts,
-                    "skipped_existing_users": skipped_existing_users,
-                },
+                payload=summary_payload,
+                **normalize_darknet_payload(summary_payload),
             )
         )
 
