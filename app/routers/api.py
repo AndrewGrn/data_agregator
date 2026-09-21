@@ -24,11 +24,13 @@ from app.models import (
     DarknetUser,
     DarknetUserMembership,
     DarknetAuthToken,
+    EventFile,
     JobStatus,
     ParseJob,
     ParserAccount,
     ParserType,
     RawEvent,
+    RawEventFile,
     RegistrationToken,
     Target,
     TargetAccountLink,
@@ -51,6 +53,7 @@ from app.security import (
 )
 from app.services.darknet_profiles import upsert_darknet_profile_from_event
 from app.services.message_search import search_messages
+from app.services.object_store import object_store
 from app.services.scheduler import schedule_once, schedule_target_once, sync_telegram_memberships
 from app.services.telegram_accounts import (
     account_parallel_limits,
@@ -4506,3 +4509,26 @@ def list_events(limit: int = 100, db: Session = Depends(get_db), user=Depends(ge
 def get_event_payload(event_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
     event = _ensure_event_access(db, db.get(RawEvent, event_id), user)
     return {"id": event.id, "payload": event.payload}
+
+
+@router.get("/events/{event_id}/files")
+def event_files(event_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    _ensure_event_access(db, db.get(RawEvent, event_id), user)
+
+    rows = db.execute(
+        select(EventFile, RawEventFile.position)
+        .join(RawEventFile, RawEventFile.file_id == EventFile.id)
+        .where(RawEventFile.raw_event_id == event_id)
+        .order_by(RawEventFile.position)
+    ).all()
+
+    return [
+        {
+            "id": file.id,
+            "filename": file.filename,
+            "mime": file.mime,
+            "size": file.size,
+            "url": object_store.presigned_url(file.storage_key),
+        }
+        for file, _position in rows
+    ]

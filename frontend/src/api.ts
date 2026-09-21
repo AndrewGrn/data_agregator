@@ -228,3 +228,15 @@ export async function adminResetUserPassword(userId: number, newPassword?: strin
 export async function adminRevokeUserSessions(userId: number) {
   return apiPost<{ ok: boolean }>(`/api/admin/users/${userId}/revoke-sessions`);
 }
+
+export type EventFile = {
+  id: number;
+  filename: string | null;
+  mime: string | null;
+  size: number | null;
+  url: string | null;
+};
+
+export async function fetchEventFiles(eventId: number): Promise<EventFile[]> {
+  return apiGet<EventFile[]>(`/api/events/${eventId}/files`);
+}

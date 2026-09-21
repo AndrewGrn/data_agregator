@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ApiError, apiGet, apiPost } from "../api";
+import { ApiError, apiGet, apiPost, fetchEventFiles, type EventFile } from "../api";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
@@ -248,6 +248,58 @@ type TargetIntelResponse = {
   candidates: TargetIntelCandidate[];
   cross_check: CrossCheckResponse;
 };
+
+function formatFileSize(size: number | null): string {
+  if (size === null || size === undefined) return "";
+  if (size < 1024) return `${size} Б`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} КБ`;
+  return `${(size / (1024 * 1024)).toFixed(1)} МБ`;
+}
+
+function MessageAttachments({ eventId }: { eventId: number }) {
+  const [files, setFiles] = useState<EventFile[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchEventFiles(eventId)
+      .then((rows) => {
+        if (!cancelled) setFiles(rows);
+      })
+      .catch(() => {
+        // тихо ігноруємо: відсутність вкладень не повинна ламати стрічку
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [eventId]);
+
+  if (files.length === 0) return null;
+
+  return (
+    <div className="mt-2 flex flex-wrap gap-2">
+      {files.map((file) =>
+        (file.mime ?? "").startsWith("image/") && file.url ? (
+          <img
+            key={file.id}
+            src={file.url}
+            alt={file.filename ?? "attachment"}
+            className="h-24 w-24 rounded-md border border-border object-cover"
+          />
+        ) : (
+          <a
+            key={file.id}
+            href={file.url ?? undefined}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-md border border-border bg-background px-2 py-1 text-xs text-muted-foreground hover:underline"
+          >
+            {file.filename ?? "файл"} {formatFileSize(file.size)}
+          </a>
+        )
+      )}
+    </div>
+  );
+}
 
 export function DataPage() {
   const [targets, setTargets] = useState<TargetOverview[]>([]);
@@ -982,6 +1034,7 @@ export function DataPage() {
                       <p className="text-xs text-muted-foreground">{msg.observed_at_text}</p>
                     </div>
                     <p className="whitespace-pre-wrap text-sm">{msg.text}</p>
+                    <MessageAttachments eventId={msg.id} />
                     <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                       <Badge variant="outline">{msg.message_kind}</Badge>
                       <span>ID події: {msg.id}</span>

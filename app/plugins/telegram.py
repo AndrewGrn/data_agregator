@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import logging
 from typing import Any
 
 from sqlalchemy import and_, select
@@ -11,8 +12,11 @@ from telethon.sessions import StringSession
 
 from app.config import get_settings
 from app.models import OnboardingStatus, ParseJob, ParserAccount, ParserType, Target, TargetAccountLink, TelegramOffset
-from app.plugins.base import JobSpec, ParsedEvent, ParserPlugin
+from app.plugins.base import FileRef, JobSpec, ParsedEvent, ParserPlugin
+from app.services.object_store import object_store
 from app.services.telegram_offsets import update_gapfill_state
+
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
@@ -92,6 +96,59 @@ def normalize_telegram_payload(item: dict) -> dict:
         "thread_id": thread_id,
         "reply_to": str(parent_message_id) if parent_message_id is not None else None,
     }
+
+
+async def _download_media(msg: Any, max_bytes: int) -> FileRef | None:
+    """Download a message attachment into S3, returning its reference.
+
+    Returns None when there is no media, it exceeds the limit, or the object
+    store is unavailable — the event is still saved, just without the file.
+    """
+    if not getattr(msg, "media", None):
+        return None
+
+    file_obj = getattr(msg, "file", None)
+    size = getattr(file_obj, "size", None)
+    if size is not None and int(size) > max_bytes:
+        return None
+
+    try:
+        data = await msg.download_media(file=bytes)
+    except Exception:
+        logger.exception("telegram download_media failed for message %s", getattr(msg, "id", None))
+        return None
+    if not data or len(data) > max_bytes:
+        return None
+
+    stored = object_store.put_bytes(
+        data,
+        mime=getattr(file_obj, "mime_type", None),
+        filename=getattr(file_obj, "name", None),
+    )
+    if stored is None:
+        return None
+
+    return FileRef(
+        source_ref=str(msg.id),
+        filename=stored.filename,
+        mime=stored.mime,
+        size=stored.size,
+        sha256=stored.sha256,
+    )
+
+
+def _file_entries(file_ref: FileRef | None) -> list[dict[str, Any]]:
+    if file_ref is None:
+        return []
+    return [
+        {
+            "source_ref": file_ref.source_ref,
+            "filename": file_ref.filename,
+            "mime": file_ref.mime,
+            "size": file_ref.size,
+            "sha256": file_ref.sha256,
+        }
+    ]
 
 
 class TelegramPlugin(ParserPlugin):
@@ -361,6 +418,7 @@ class TelegramPlugin(ParserPlugin):
                 raise ValueError(f"Telegram account '{account.label}' is not authorized.")
             entity = _entity_ref(identifier)
 
+            max_bytes = int(get_settings().media_max_bytes)
             messages: list[dict[str, Any]] = []
             root_post_ids: list[int] = []
             root_count = 0
@@ -391,6 +449,7 @@ class TelegramPlugin(ParserPlugin):
                 msg_id = int(msg.id)
                 if oldest_root_message_id is None or msg_id < oldest_root_message_id:
                     oldest_root_message_id = msg_id
+                file_ref = await _download_media(msg, max_bytes)
                 messages.append(
                     {
                         "event_type": "telegram_message",
@@ -404,6 +463,7 @@ class TelegramPlugin(ParserPlugin):
                             "first_name": getattr(sender, "first_name", None),
                             "last_name": getattr(sender, "last_name", None),
                         },
+                        "files": _file_entries(file_ref),
                         "raw": msg.to_dict(),
                     }
                 )
@@ -440,6 +500,7 @@ class TelegramPlugin(ParserPlugin):
                             or getattr(cmt.peer_id, "chat_id", None)
                             or getattr(cmt.peer_id, "user_id", None)
                         )
+                        cmt_file_ref = await _download_media(cmt, max_bytes)
                         messages.append(
                             {
                                 "event_type": "telegram_comment",
@@ -456,6 +517,7 @@ class TelegramPlugin(ParserPlugin):
                                     "first_name": getattr(sender, "first_name", None),
                                     "last_name": getattr(sender, "last_name", None),
                                 },
+                                "files": _file_entries(cmt_file_ref),
                                 "raw": cmt.to_dict(),
                             }
                         )
@@ -658,6 +720,16 @@ class TelegramPlugin(ParserPlugin):
                     external_id=external_id,
                     observed_at=observed_at,
                     payload=item,
+                    files=[
+                        FileRef(
+                            source_ref=str(entry.get("source_ref") or ""),
+                            filename=entry.get("filename"),
+                            mime=entry.get("mime"),
+                            size=entry.get("size"),
+                            sha256=entry.get("sha256"),
+                        )
+                        for entry in (item.get("files") or [])
+                    ],
                     **normalize_telegram_payload(item),
                 )
             )
