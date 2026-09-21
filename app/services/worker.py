@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import json
+import logging
 import socket
 import threading
 import time
@@ -29,6 +30,7 @@ from app.services.telegram_offsets import update_offset_from_message
 from app.services.telegram_profiles import upsert_telegram_profile_from_event
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 def _effective_job_queue(job: ParseJob) -> str:
@@ -299,11 +301,10 @@ def _process_job(session: Session, job: ParseJob) -> None:
     account = session.get(ParserAccount, job.account_id) if job.account_id else None
     plugin = plugin_registry.get(parser_type_value)
     started_at = dt.datetime.now(dt.UTC)
-    print(
-        f"[worker] start job#{job.id} key={job.job_key or '-'} "
+    logger.info(
+        f"start job#{job.id} key={job.job_key or '-'} "
         f"queue={_effective_job_queue(job)} target={job.target_id} "
-        f"account={job.account_id or '-'} attempt={job.attempt}",
-        flush=True,
+        f"account={job.account_id or '-'} attempt={job.attempt}"
     )
 
     try:
@@ -376,17 +377,16 @@ def _process_job(session: Session, job: ParseJob) -> None:
         _complete_job(session, job)
         finished_at = dt.datetime.now(dt.UTC)
         duration = (finished_at - started_at).total_seconds()
-        print(
-            f"[worker] done job#{job.id} status=succeeded events={len(events)} "
-            f"duration_sec={duration:.1f}",
-            flush=True,
+        logger.info(
+            f"done job#{job.id} status=succeeded events={len(events)} "
+            f"duration_sec={duration:.1f}"
         )
     except Exception as exc:
         # Ensure session is usable after flush/DB errors.
         session.rollback()
         job = session.get(ParseJob, job_id)
         if not job:
-            print(f"[worker] job#{job_id} disappeared after error: {exc}", flush=True)
+            logger.error(f"job#{job_id} disappeared after error: {exc}", exc_info=True)
             return
         if account_id is not None and is_telegram_job:
             account = session.get(ParserAccount, account_id)
@@ -395,10 +395,9 @@ def _process_job(session: Session, job: ParseJob) -> None:
         _fail_job(session, job, str(exc))
         finished_at = dt.datetime.now(dt.UTC)
         duration = (finished_at - started_at).total_seconds()
-        print(
-            f"[worker] done job#{job.id} status={job.status.value} "
-            f"duration_sec={duration:.1f} error={str(exc)[:200]}",
-            flush=True,
+        logger.exception(
+            f"done job#{job.id} status={job.status.value} "
+            f"duration_sec={duration:.1f} error={str(exc)[:200]}"
         )
 
 
@@ -430,7 +429,7 @@ def run_workers(session_factory, concurrency: int, queues: set[str] | None = Non
     if queues:
         allowed_queues = {str(item).strip().lower() for item in queues if str(item).strip()}
     queue_label = ",".join(sorted(allowed_queues)) if allowed_queues else "all"
-    print(f"[worker] starting pool concurrency={concurrency} queues={queue_label}", flush=True)
+    logger.info(f"starting pool concurrency={concurrency} queues={queue_label}")
 
     for idx in range(concurrency):
         name = f"{hostname}-w{idx}"
@@ -531,7 +530,7 @@ async def run_workers_nats(session_factory, concurrency: int, queues: set[str] |
         allowed_queues = {QUEUE_TELEGRAM_LIVE, QUEUE_TELEGRAM_BACKFILL, QUEUE_DARKNET, QUEUE_WEB}
     queue_label = ",".join(sorted(allowed_queues))
     worker_slots = max(int(concurrency), 1)
-    print(f"[worker] starting JetStream consumer concurrency={worker_slots} queues={queue_label}", flush=True)
+    logger.info(f"starting JetStream consumer concurrency={worker_slots} queues={queue_label}")
     semaphore = asyncio.Semaphore(worker_slots)
 
     nc, js = await _connect()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,6 +17,8 @@ from app.services.event_sink import persist_events
 from app.services.telegram_offsets import update_offset_from_message
 from app.services.telegram_profiles import upsert_telegram_profile_from_event
 from app.services.telegram_accounts import normalize_telegram_identifier
+
+logger = logging.getLogger(__name__)
 
 
 def _coerce_utc(value: dt.datetime | None) -> dt.datetime | None:
@@ -205,7 +208,7 @@ class TelegramHybridListener:
         await client.connect()
         if not await client.is_user_authorized():
             await client.disconnect()
-            print(f"[telegram-listener] account #{snapshot.account_id} is not authorized; skipping.")
+            logger.warning(f"account #{snapshot.account_id} is not authorized; skipping.")
             return
 
         @client.on(events.NewMessage(incoming=True))
@@ -214,8 +217,8 @@ class TelegramHybridListener:
 
         task = asyncio.create_task(client.run_until_disconnected())
         self._states[snapshot.account_id] = AccountRuntime(snapshot=snapshot, client=client, task=task)
-        print(
-            f"[telegram-listener] account #{snapshot.account_id} ({snapshot.label}) listening "
+        logger.info(
+            f"account #{snapshot.account_id} ({snapshot.label}) listening "
             f"for {len(snapshot.route_map)} route keys."
         )
 
@@ -231,7 +234,7 @@ class TelegramHybridListener:
                     await asyncio.wait_for(runtime.task, timeout=5)
                 except Exception:
                     runtime.task.cancel()
-        print(f"[telegram-listener] account #{account_id} listener stopped.")
+        logger.info(f"account #{account_id} listener stopped.")
 
     def _persist_live_message(
         self,
@@ -332,7 +335,7 @@ class TelegramHybridListener:
                 payload,
             )
         except Exception as exc:
-            print(f"[telegram-listener] account #{account_id} message handling error: {exc}")
+            logger.warning(f"account #{account_id} message handling error: {exc}", exc_info=True)
 
     async def _sync_accounts(self) -> None:
         desired = self._load_snapshots()
@@ -358,12 +361,12 @@ class TelegramHybridListener:
                     err = current.task.exception()
                 except Exception:
                     err = None
-                print(f"[telegram-listener] account #{account_id} disconnected: {err}. restarting.")
+                logger.warning(f"account #{account_id} disconnected: {err}. restarting.", exc_info=err)
                 await self._stop_account(account_id)
                 await self._start_account(snapshot)
 
     async def run_forever(self) -> None:
-        print(f"[telegram-listener] started, refresh interval {self._refresh_seconds}s.")
+        logger.info(f"started, refresh interval {self._refresh_seconds}s.")
         try:
             while True:
                 await self._sync_accounts()
