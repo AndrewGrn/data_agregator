@@ -350,6 +350,22 @@ def test_floodwait_cooldown_survives_the_defer_commit(monkeypatch):
     assert session.get(ParseJob, job.id).status == JobStatus.retry
 
 
+def test_peer_flood_cooldown_survives_the_defer_commit(monkeypatch):
+    """Same shape as the FloodWait case: run through _process_job + commit, not
+    run_onboard_job directly, since that's what actually persists the cooldown."""
+    session = _session()
+    target, job = _queued(session)
+
+    _process(session, job, _FakeClient(raise_on_join=PeerFloodError(request=None)), monkeypatch)
+
+    acc = session.get(ParserAccount, session.execute(select(ParserAccount.id)).scalar_one())
+    assert acc.cooldown_until is not None, "the peer-flooded account must stay cooled after the defer"
+    assert (onb._aware(acc.cooldown_until) - dt.datetime.now(dt.UTC)) > dt.timedelta(hours=1), \
+        "PeerFlood must cool down far longer than a plain FloodWait"
+    assert onb.pick_account(session, target, now=dt.datetime.now(dt.UTC)) is None
+    assert session.get(ParseJob, job.id).status == JobStatus.retry
+
+
 def test_channels_full_survives_the_defer_commit(monkeypatch):
     session = _session()
     target, job = _queued(session)

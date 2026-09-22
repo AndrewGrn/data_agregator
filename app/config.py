@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     telegram_qr_login_ttl_seconds: int = 180
     telegram_join_min_gap_seconds: int = 900
     telegram_join_daily_limit: int = 10
+    # PeerFloodError carries no retry-after (unlike FloodWaitError), and it's
+    # Telegram's strongest spam signal, so the account sits out a long fixed
+    # window rather than the minutes-scale FloodWait cooldown. 24h chosen as a
+    # conservative default: long enough to matter, short enough that a wrongly
+    # flagged account isn't parked for days.
+    telegram_peer_flood_cooldown_seconds: int = 24 * 3600
     telegram_liveness_interval_seconds: int = 600
     telegram_liveness_failures_to_dead: int = 2
     darknet_http_timeout_seconds: int = 90

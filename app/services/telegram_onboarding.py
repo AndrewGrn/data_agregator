@@ -59,8 +59,6 @@ _TERMINAL_JOIN_ERRORS = (
     # raise ValueError inside the join block or they land here by mistake.
     ValueError,
 )
-# PeerFlood carries no retry-after, so pick a window long enough to matter.
-_PEER_FLOOD_COOLDOWN_SECONDS = 24 * 3600
 
 
 @dataclass(slots=True)
@@ -208,6 +206,12 @@ def _available(account: ParserAccount, now: dt.datetime) -> bool:
 
 def pick_account(session: Session, target: Target, *, now: dt.datetime) -> ParserAccount | None:
     """Prefer an account that is already a member; otherwise the least loaded."""
+    # ponytail: this SELECT has no FOR UPDATE, so two worker processes can both
+    # score the same "least loaded" account and both hand it to a target in the
+    # same instant (the later lock_account_for_pacing() only serializes the
+    # join itself, not this ranking). Harmless with one worker process (the
+    # only mode this install runs); add with_for_update(skip_locked=True) here
+    # if a second worker process is ever added.
     accounts = session.execute(
         select(ParserAccount).where(
             ParserAccount.parser_type == "telegram",
@@ -422,8 +426,9 @@ def run_onboard_job(
         raise DeferJob(seconds=min(seconds, 3600), reason=f"FloodWait {seconds}s on account #{account.id}")
     except PeerFloodError:
         # Telegram's hardest "you are spamming" signal; it carries no wait hint.
-        account.cooldown_until = now + dt.timedelta(seconds=_PEER_FLOOD_COOLDOWN_SECONDS)
-        logger.warning("onboard peerflood account=%s cooled for %ss", account.id, _PEER_FLOOD_COOLDOWN_SECONDS)
+        cooldown_seconds = int(settings.telegram_peer_flood_cooldown_seconds)
+        account.cooldown_until = now + dt.timedelta(seconds=cooldown_seconds)
+        logger.warning("onboard peerflood account=%s cooled for %ss", account.id, cooldown_seconds)
         raise DeferJob(seconds=3600, reason=f"PeerFlood on account #{account.id}")
     except ChannelsTooMuchError:
         account.credentials = {**(account.credentials or {}), "channels_full": True}
