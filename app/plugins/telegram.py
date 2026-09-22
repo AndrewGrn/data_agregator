@@ -50,6 +50,19 @@ def _entity_ref(identifier: str | int) -> str | int:
 _EVENT_KINDS = {"telegram_message": "message", "telegram_comment": "comment"}
 
 
+def run_onboard_job(session: Session, job: ParseJob, target: Target) -> None:
+    """Proxy to app.services.telegram_onboarding.run_onboard_job.
+
+    Imported lazily inside the call (not at module scope) to avoid a circular
+    import: scheduler -> plugin_registry -> telegram -> telegram_onboarding ->
+    scheduler._enqueue_job_specs. Exposed as a module-level name (rather than a
+    local import inside TelegramPlugin.run) so it stays monkeypatchable in tests.
+    """
+    from app.services.telegram_onboarding import run_onboard_job as _impl
+
+    return _impl(session, job, target)
+
+
 def normalize_telegram_payload(item: dict) -> dict:
     """Map a Telegram message dict onto the shared ParsedEvent fields."""
     sender = item.get("sender") if isinstance(item.get("sender"), dict) else {}
@@ -162,6 +175,8 @@ class TelegramPlugin(ParserPlugin):
         return mode
 
     def _is_account_available(self, account: ParserAccount, now: dt.datetime) -> bool:
+        if account.alive is False:
+            return False
         if account.cooldown_until and account.cooldown_until > now:
             return False
         if account.health_score < 20:
@@ -242,6 +257,11 @@ class TelegramPlugin(ParserPlugin):
                 ParserAccount.parser_type == ParserType.telegram,
             )
         ).all()
+
+        quiet_raw = (target.config or {}).get("quiet_until")
+        quiet_until = _parse_iso_datetime(quiet_raw) if quiet_raw else None
+        if quiet_until and quiet_until > dt.datetime.now(dt.UTC):
+            return []
 
         if not rows:
             target.onboarding_status = OnboardingStatus.needs_account
@@ -610,11 +630,15 @@ class TelegramPlugin(ParserPlugin):
         return payloads
 
     def run(self, session: Session, job: ParseJob, target: Target, account: ParserAccount | None) -> list[ParsedEvent]:
+        mode = str(job.payload.get("mode") or "poll")
+        if mode == "onboard":
+            run_onboard_job(session, job, target)
+            return []
+
         if not account:
             raise ValueError("Telegram job requires account_id")
 
         identifier = job.payload.get("identifier", target.identifier)
-        mode = str(job.payload.get("mode") or "poll")
         is_backfill = bool(job.payload.get("backfill"))
         backfill_mode = str(job.payload.get("backfill_mode") or "").strip().lower()
         limit = int(job.payload.get("limit", settings.telegram_fetch_limit))
