@@ -14,7 +14,7 @@ def _text(value) -> str:
 
 
 class XenForoLikeAdapter(DarknetForumAdapter):
-    name = "xenforo"
+    name = "xenforo_like"
 
     @staticmethod
     def _limit_value(config: dict, key: str, default: int) -> int:

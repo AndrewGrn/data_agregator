@@ -156,7 +156,12 @@ class DarknetPlugin(ParserPlugin):
         last_seen_map: dict[str, dt.datetime],
         now: dt.datetime,
     ) -> tuple[list[str], dict[str, int]]:
-        reparse_enabled = self._reparse_existing_threads(target) or self._collect_maximum(target)
+        # `collect_maximum` only governs per-page/per-post limits inside the
+        # adapters (see `parse_thread`/`discover_thread_urls`); it must not
+        # override the independently exposed `reparse_existing_threads`
+        # toggle, or unchecking "reparse" in the UI would silently do
+        # nothing while `collect_maximum` stays at its default of True.
+        reparse_enabled = self._reparse_existing_threads(target)
         interval_minutes = self._thread_reparse_interval_minutes(target)
         due_before = now - dt.timedelta(minutes=interval_minutes)
 

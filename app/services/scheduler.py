@@ -25,6 +25,11 @@ def _enqueue_job_specs(session: Session, target: Target, job_specs) -> tuple[int
             last_job_at = session.execute(
                 select(ParseJob.created_at).where(ParseJob.job_key == spec.job_key).order_by(desc(ParseJob.created_at)).limit(1)
             ).scalar_one_or_none()
+            if last_job_at is not None and last_job_at.tzinfo is None:
+                # SQLite (used by unit tests) drops tzinfo on round-trip even for
+                # DateTime(timezone=True) columns; Postgres preserves it. Normalize
+                # to UTC so the subtraction below works the same on both.
+                last_job_at = last_job_at.replace(tzinfo=dt.UTC)
             if last_job_at and (now - last_job_at) < dt.timedelta(seconds=interval_seconds):
                 skipped_existing += 1
                 continue

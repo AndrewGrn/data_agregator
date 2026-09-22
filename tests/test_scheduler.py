@@ -14,7 +14,16 @@ def make_session():
     return sessionmaker(bind=engine, expire_on_commit=False)()
 
 
-def test_scheduler_creates_darknet_job_once():
+def test_scheduler_creates_darknet_job_once(monkeypatch):
+    # Job creation is a pure DB-side decision; dispatching created jobs onto
+    # NATS is a separate concern that needs a live broker (nats://nats:4222
+    # only resolves inside the docker network). Stub the publish call so
+    # this stays a unit test of scheduling, not an integration test of NATS.
+    monkeypatch.setattr(
+        "app.services.scheduler.publish_jobs_sync",
+        lambda items: [{"ok": True, "error": None} for _ in items],
+    )
+
     session = make_session()
     try:
         target = Target(parser_type=ParserType.darknet, name="forum", identifier="http://example.onion", config={})

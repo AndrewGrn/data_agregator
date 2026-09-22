@@ -66,12 +66,21 @@ MODULE_META = {
         "supports_links": True,
         "supports_membership_sync": False,
     },
+    "whatsapp": {
+        "title": "WhatsApp Модуль",
+        "description": "Збір даних з чатів та груп WhatsApp.",
+        "supports_accounts": True,
+        "supports_links": True,
+        "supports_membership_sync": True,
+    },
 }
+
+_MODULE_TITLES = {name: meta["title"] for name, meta in MODULE_META.items()}
 
 
 def _get_module_meta(parser_name: str) -> dict:
     default = {
-        "title": f"{parser_name.title()} Модуль",
+        "title": _MODULE_TITLES.get(parser_name, f"{parser_name.capitalize()} Модуль"),
         "description": "Модуль парсингу даних.",
         "supports_accounts": True,
         "supports_links": True,
