@@ -13,6 +13,12 @@ _INVITE_RE = re.compile(
     r"(?:https?://)?(?:t\.me|telegram\.me)/(?:\+|joinchat/)([A-Za-z0-9_-]+)",
     re.IGNORECASE,
 )
+# t.me/c/<channel_id>/<message_id>: a link into a private channel/supergroup.
+# There is nothing to join by — the account must already be a member.
+_PRIVATE_LINK_RE = re.compile(
+    r"(?:https?://)?(?:t\.me|telegram\.me)/c/(\d+)(?:/|$)",
+    re.IGNORECASE,
+)
 _USERNAME_LINK_RE = re.compile(
     r"(?:https?://)?(?:t\.me|telegram\.me)/([a-zA-Z0-9_]+)",
     re.IGNORECASE,
@@ -27,6 +33,10 @@ def normalize_telegram_identifier(value: str) -> str:
     invite = _INVITE_RE.search(raw)
     if invite:
         return f"invite:{invite.group(1)}"
+
+    private = _PRIVATE_LINK_RE.search(raw)
+    if private:
+        return f"-100{private.group(1)}"
 
     link = _USERNAME_LINK_RE.search(raw)
     if link:

@@ -484,6 +484,15 @@ def run_onboard_job(
     except UserAlreadyParticipantError:
         outcome = asyncio.run(_with_client(make_client, lambda c: _resolve_only(c, target.identifier)))
     except _TERMINAL_JOIN_ERRORS as exc:
+        if isinstance(exc, ValueError) and target.identifier.startswith("-100"):
+            # A bare channel id resolves only for an account that is already
+            # inside; there is no username or invite to join by.
+            _fail(
+                target,
+                "Приватний чат: жоден акаунт пулу не є його учасником. "
+                "Додайте виділений акаунт, який уже в чаті, і призначте його вручну.",
+            )
+            return
         _fail(target, f"{type(exc).__name__}: {exc}")
         return
 

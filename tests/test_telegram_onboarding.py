@@ -489,3 +489,25 @@ def test_run_defers_while_pool_is_only_cooling_down():
     assert client.calls == []
     assert target.onboarding_step == "queued"
     assert target.onboarding_status.value == "needs_account"
+
+
+def test_private_link_nobody_is_in_fails_with_a_human_message():
+    """t.me/c/<id>/<msg> is a private chat: there is nothing to join by, so an
+    unresolvable id must say 'pick an account that is already a member' instead
+    of leaking Telethon's 'Cannot find any entity corresponding to ...'."""
+    session = _session()
+    target, job = _queued(session, identifier="https://t.me/c/2707984934/1393921")
+    assert target.identifier == "-1002707984934"
+
+    class _Outsider(_FakeClient):
+        async def get_entity(self, ident):
+            raise ValueError(f'Cannot find any entity corresponding to "{ident}"')
+
+    client = _Outsider()
+    onb.run_onboard_job(session, job, target, client_factory=lambda acc: client)
+    session.commit()
+
+    assert target.onboarding_step == "failed"
+    assert target.onboarding_status.value == "needs_account"
+    assert target.onboarding_error.startswith("Приватний чат")
+    assert "Cannot find any entity" not in target.onboarding_error

@@ -23,6 +23,9 @@ from app.services.telegram_accounts import (
         ("t.me/+AbCdEf123", "invite:AbCdEf123"),
         ("https://t.me/joinchat/AbCdEf123", "invite:AbCdEf123"),
         ("telegram.me/joinchat/AbCdEf123", "invite:AbCdEf123"),
+        ("https://t.me/c/2707984934/1393921", "-1002707984934"),
+        ("t.me/c/2707984934", "-1002707984934"),
+        ("https://t.me/c/2707984934/1393921?single", "-1002707984934"),
         ("  ", ""),
     ],
 )
