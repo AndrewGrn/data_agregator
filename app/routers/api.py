@@ -70,14 +70,12 @@ from app.services.scheduler import (
 )
 from app.services.telegram_accounts import (
     account_parallel_limits,
-    compute_account_load_score,
-    find_dialog_match,
     normalize_telegram_identifier,
     parse_bulk_targets_input,
     refresh_account_dialogs_sync,
     refresh_account_session_info_sync,
 )
-from app.services import telegram_qr_login
+from app.services import telegram_onboarding, telegram_qr_login
 
 router = APIRouter(prefix="/api", tags=["api"])
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
@@ -223,35 +221,6 @@ def _request_client_ip(request: Request | None) -> str | None:
     if request.client and request.client.host:
         return str(request.client.host)
     return None
-
-
-def _default_telegram_target_config() -> dict:
-    return {
-        "limit": 200,
-        "poll_interval_seconds": 300,
-        "live_enabled": True,
-        "gapfill_limit": 200,
-        "backfill_limit": 5000,
-        "backfill_full_batch_size": 300,
-        "comments_enabled": True,
-        "gapfill_comments_enabled": True,
-        "backfill_comments_enabled": True,
-        "comments_limit": 20,
-        "comments_depth": 2,
-        "comments_recheck_posts": 30,
-        "participants_sync_enabled": True,
-        "participants_sync_interval_seconds": 3600,
-        "participants_limit": 1000,
-        "is_risky": False,
-        "risk_label": "",
-        "backfill": {
-            "enabled": False,
-            "mode": "range",
-            "from": None,
-            "to": None,
-            "chunk_days": 7,
-        },
-    }
 
 
 def _parse_datetime_input(value: str) -> dt.datetime:
@@ -493,6 +462,64 @@ def _ensure_account_access(account: ParserAccount | None, user: User) -> ParserA
     if account.owner_user_id is None or int(account.owner_user_id) != int(user.id):
         raise HTTPException(status_code=403, detail="Немає доступу до цього акаунта")
     return account
+
+
+def _active_account_for(db: Session, target_id: int) -> ParserAccount | None:
+    return db.execute(
+        select(ParserAccount)
+        .join(TargetAccountLink, TargetAccountLink.account_id == ParserAccount.id)
+        .where(TargetAccountLink.target_id == int(target_id), TargetAccountLink.is_active.is_(True))
+    ).scalar_one_or_none()
+
+
+def _telegram_target_row(
+    db: Session, target: Target, *, events_count: int = 0, last_event_at: dt.datetime | None = None
+) -> dict:
+    account = _active_account_for(db, target.id)
+    return {
+        "id": int(target.id),
+        "name": target.name,
+        "identifier": target.identifier,
+        "kind": (target.config or {}).get("kind"),
+        "is_active": bool(target.is_active),
+        "onboarding_status": target.onboarding_status.value if target.onboarding_status else "ready",
+        "onboarding_step": target.onboarding_step or "idle",
+        "onboarding_error": target.onboarding_error,
+        "account": {"id": int(account.id), "label": account.label, "alive": account.alive} if account else None,
+        "events_count": int(events_count),
+        "last_event_at": last_event_at.isoformat() if last_event_at else None,
+    }
+
+
+def _telegram_account_row(db: Session, account: ParserAccount) -> dict:
+    now = dt.datetime.now(dt.UTC)
+    targets_count = int(
+        db.scalar(
+            select(func.count()).select_from(TargetAccountLink).where(
+                TargetAccountLink.account_id == account.id, TargetAccountLink.is_active.is_(True)
+            )
+        )
+        or 0
+    )
+    joins_today = int(account.join_window_count or 0)
+    if account.join_window_start and (now - account.join_window_start) >= dt.timedelta(days=1):
+        joins_today = 0
+    creds = account.credentials or {}
+    return {
+        "id": int(account.id),
+        "label": account.label,
+        "username": creds.get("username"),
+        "pool_mode": account.pool_mode or "shared",
+        "is_active": bool(account.is_active),
+        "alive": account.alive,
+        "last_checked_at": account.last_checked_at.isoformat() if account.last_checked_at else None,
+        "dead_reason": account.dead_reason,
+        "health_score": float(account.health_score or 0.0),
+        "cooldown_until": account.cooldown_until.isoformat() if account.cooldown_until else None,
+        "targets_count": targets_count,
+        "joins_today": joins_today,
+        "join_daily_limit": int(settings.telegram_join_daily_limit),
+    }
 
 
 def _owned_targets_stmt(user: User):
@@ -1377,6 +1404,11 @@ def telegram_module_data(
                 ParseJob.status == JobStatus.succeeded,
             )
         )
+        last_event_at = db.scalar(
+            select(func.max(RawEvent.created_at)).where(
+                RawEvent.parser_type == parser_type, RawEvent.target_id == target.id
+            )
+        )
         target_offsets = offsets_by_target.get(target.id, {})
         if not target.is_active:
             process_text = "Зупинено"
@@ -1408,6 +1440,7 @@ def telegram_module_data(
 
         target_rows.append(
             {
+                **_telegram_target_row(db, target, events_count=events_count, last_event_at=last_event_at),
                 "id": target.id,
                 "name": target.name,
                 "identifier": target.identifier,
@@ -2234,6 +2267,115 @@ def retry_single_job(parser_name: str, job_id: int, db: Session = Depends(get_db
     job.finished_at = None
     db.commit()
     return {"ok": True, "job_id": int(job.id), "status": job.status.value}
+
+
+class OnboardRequest(BaseModel):
+    input: str
+    account_id: int | None = None
+    allow_join: bool = True
+
+
+@router.post("/modules/telegram/onboard")
+def telegram_onboard(payload: OnboardRequest, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    if not str(payload.input or "").strip():
+        raise HTTPException(status_code=400, detail="Вкажіть посилання, @канал або ID")
+    if payload.account_id is not None:
+        _ensure_account_access(db.get(ParserAccount, int(payload.account_id)), user)
+    try:
+        target = telegram_onboarding.onboard(
+            db,
+            raw_input=payload.input,
+            owner_user_id=int(user.id),
+            account_id=payload.account_id,
+            allow_join=payload.allow_join,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    return _telegram_target_row(db, target)
+
+
+@router.get("/modules/telegram/accounts/overview")
+def telegram_accounts_overview(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    stmt = select(ParserAccount).where(ParserAccount.parser_type == ParserType.telegram)
+    if not _is_admin(user):
+        stmt = stmt.where(ParserAccount.owner_user_id == int(user.id))
+    return [_telegram_account_row(db, a) for a in db.execute(stmt.order_by(ParserAccount.id)).scalars()]
+
+
+@router.post("/modules/telegram/accounts/{account_id}/check-alive")
+def telegram_account_check_alive(account_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    account = _ensure_account_access(db.get(ParserAccount, int(account_id)), user)
+    now = dt.datetime.now(dt.UTC)
+    info = refresh_account_session_info_sync(dict(account.credentials or {}))
+    account.last_checked_at = now
+    account.alive = bool(info.get("alive"))
+    if account.alive:
+        account.last_alive_at = now
+        account.dead_reason = None
+    else:
+        account.dead_reason = str(info.get("error") or "unknown")[:2000]
+    db.commit()
+    return {"alive": account.alive, "error": account.dead_reason, "checked_at": now.isoformat()}
+
+
+class PoolModeRequest(BaseModel):
+    pool_mode: str
+
+
+@router.post("/modules/telegram/accounts/{account_id}/pool-mode")
+def telegram_account_pool_mode(
+    account_id: int, payload: PoolModeRequest, db: Session = Depends(get_db), user=Depends(get_current_user)
+):
+    if payload.pool_mode not in {"shared", "dedicated"}:
+        raise HTTPException(status_code=400, detail="pool_mode: shared або dedicated")
+    account = _ensure_account_access(db.get(ParserAccount, int(account_id)), user)
+    account.pool_mode = payload.pool_mode
+    db.commit()
+    return _telegram_account_row(db, account)
+
+
+@router.get("/modules/telegram/accounts/{account_id}/targets")
+def telegram_account_targets(account_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    account = _ensure_account_access(db.get(ParserAccount, int(account_id)), user)
+    targets = db.execute(
+        select(Target)
+        .join(TargetAccountLink, TargetAccountLink.target_id == Target.id)
+        .where(TargetAccountLink.account_id == account.id, TargetAccountLink.is_active.is_(True))
+        .order_by(Target.name)
+    ).scalars().all()
+    return [_telegram_target_row(db, t) for t in targets]
+
+
+class ReassignRequest(BaseModel):
+    account_id: int | None = None
+
+
+@router.post("/modules/telegram/targets/{target_id}/reassign")
+def telegram_target_reassign(
+    target_id: int, payload: ReassignRequest, db: Session = Depends(get_db), user=Depends(get_current_user)
+):
+    target = _ensure_target_access(db.get(Target, int(target_id)), user)
+    if payload.account_id is not None:
+        _ensure_account_access(db.get(ParserAccount, int(payload.account_id)), user)
+    for link in db.execute(
+        select(TargetAccountLink).where(TargetAccountLink.target_id == target.id, TargetAccountLink.is_active.is_(True))
+    ).scalars():
+        link.is_active = False
+    db.flush()
+    telegram_onboarding.onboard(
+        db, raw_input=target.identifier, owner_user_id=target.owner_user_id, account_id=payload.account_id, allow_join=True
+    )
+    db.commit()
+    return _telegram_target_row(db, target)
+
+
+@router.post("/modules/telegram/targets/{target_id}/retry-onboarding")
+def telegram_target_retry_onboarding(target_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    target = _ensure_target_access(db.get(Target, int(target_id)), user)
+    telegram_onboarding.onboard(db, raw_input=target.identifier, owner_user_id=target.owner_user_id, allow_join=True)
+    db.commit()
+    return _telegram_target_row(db, target)
 
 
 @router.post("/modules/telegram/accounts/reset-cooldown")
@@ -3097,279 +3239,33 @@ def telegram_account_add_target_from_dialog(
         raise HTTPException(status_code=404, detail="Telegram акаунт не знайдено")
 
     identifier_raw = str(payload.get("identifier") or "")
-    title_raw = str(payload.get("title") or "")
-    run_now = bool(payload.get("run_now", True))
-    identifier = normalize_telegram_identifier(identifier_raw)
-    if not identifier:
+    if not normalize_telegram_identifier(identifier_raw):
         raise HTTPException(status_code=400, detail="Порожній ідентифікатор")
 
-    target_stmt = select(Target).where(Target.parser_type == ParserType.telegram, Target.identifier == identifier)
-    if not _is_admin(user):
-        target_stmt = target_stmt.where(Target.owner_user_id == int(user.id))
-    target = db.execute(target_stmt).scalar_one_or_none()
-
-    owner_user_id = account.owner_user_id or int(user.id)
-    created = False
-    if not target:
-        default_cfg = _default_telegram_target_config()
-        target = Target(
-            parser_type=ParserType.telegram,
-            name=title_raw.strip() or identifier,
-            identifier=identifier,
-            owner_user_id=owner_user_id,
-            config=_telegram_target_config(
-                limit=int(default_cfg.get("limit", 200)),
-                poll_interval_seconds=int(default_cfg.get("poll_interval_seconds", 300)),
-                live_enabled=bool(default_cfg.get("live_enabled", True)),
-                gapfill_limit=int(default_cfg.get("gapfill_limit", default_cfg.get("limit", 200))),
-                participants_sync_enabled=bool(default_cfg.get("participants_sync_enabled", True)),
-                participants_sync_interval_seconds=int(default_cfg.get("participants_sync_interval_seconds", 3600)),
-                participants_limit=int(default_cfg.get("participants_limit", 1000)),
-                backfill_enabled=True,
-                backfill_mode="full",
-                backfill_from="",
-                backfill_to="",
-                backfill_chunk_days=int((default_cfg.get("backfill") or {}).get("chunk_days", 7)),
-                backfill_limit=int(default_cfg.get("backfill_limit", 5000)),
-                backfill_full_batch_size=int(default_cfg.get("backfill_full_batch_size", 300)),
-                comments_enabled=bool(default_cfg.get("comments_enabled", True)),
-                gapfill_comments_enabled=bool(default_cfg.get("gapfill_comments_enabled", True)),
-                backfill_comments_enabled=bool(default_cfg.get("backfill_comments_enabled", True)),
-                comments_limit=int(default_cfg.get("comments_limit", 20)),
-                comments_depth=int(default_cfg.get("comments_depth", 2)),
-                comments_recheck_posts=int(default_cfg.get("comments_recheck_posts", 30)),
-            ),
-            is_active=True,
+    # Account already sits in this dialog, so onboarding must not try to join it again.
+    try:
+        target = telegram_onboarding.onboard(
+            db, raw_input=identifier_raw, owner_user_id=int(user.id), account_id=int(account.id), allow_join=False
         )
-        db.add(target)
-        db.flush()
-        created = True
-    else:
-        target = _ensure_target_access(target, user)
-
-    link = db.execute(
-        select(TargetAccountLink).where(
-            TargetAccountLink.target_id == target.id,
-            TargetAccountLink.account_id == account.id,
-        )
-    ).scalar_one_or_none()
-    linked_now = False
-    if not link:
-        link = TargetAccountLink(
-            target_id=target.id,
-            account_id=account.id,
-            owner_user_id=owner_user_id,
-            is_active=True,
-            auto_detected=False,
-            last_checked_at=dt.datetime.now(dt.UTC),
-        )
-        db.add(link)
-        linked_now = True
-    else:
-        link.is_active = True
-        link.last_checked_at = dt.datetime.now(dt.UTC)
-        if link.owner_user_id is None:
-            link.owner_user_id = owner_user_id
-
-    target.is_active = True
-    if run_now:
-        schedule_target_once(db, target)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.commit()
-    return {
-        "ok": True,
-        "target_id": int(target.id),
-        "target_name": target.name,
-        "identifier": target.identifier,
-        "created": bool(created),
-        "linked_now": bool(linked_now),
-        "run_now": bool(run_now),
-    }
+    return _telegram_target_row(db, target)
 
 
 @router.post("/modules/telegram/targets/smart-add")
 def telegram_smart_add_targets(payload: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
     entries_text = str(payload.get("entries_text") or "")
     entries = parse_bulk_targets_input(entries_text)
-    if not entries:
-        return {"ok": True, "processed": 0, "created_targets": 0, "linked_accounts": 0, "scheduled": 0}
-
-    limit = int(payload.get("limit") or 200)
-    poll_interval_seconds = int(payload.get("poll_interval_seconds") or 300)
-    live_enabled = bool(payload.get("live_enabled", True))
-    gapfill_limit = int(payload.get("gapfill_limit") or 200)
-    participants_sync_enabled = bool(payload.get("participants_sync_enabled", True))
-    participants_sync_interval_seconds = int(payload.get("participants_sync_interval_seconds") or 3600)
-    participants_limit = int(payload.get("participants_limit") or 1000)
-    backfill_enabled = bool(payload.get("backfill_enabled", False))
-    backfill_mode = str(payload.get("backfill_mode") or "range")
-    backfill_chunk_days = int(payload.get("backfill_chunk_days") or 7)
-    backfill_limit = int(payload.get("backfill_limit") or 5000)
-    backfill_from = _normalize_backfill_datetime_input(str(payload.get("backfill_from") or ""))
-    backfill_to = _normalize_backfill_datetime_input(str(payload.get("backfill_to") or ""))
-    run_now = bool(payload.get("run_now", True))
-
-    accounts_stmt = select(ParserAccount).where(
-        ParserAccount.parser_type == ParserType.telegram,
-        ParserAccount.is_active.is_(True),
-    )
-    if not _is_admin(user):
-        accounts_stmt = accounts_stmt.where(ParserAccount.owner_user_id == int(user.id))
-    accounts = db.execute(accounts_stmt).scalars().all()
-    if not accounts:
-        raise HTTPException(status_code=400, detail="Немає активних Telegram-акаунтів")
-
-    now = dt.datetime.now(dt.UTC)
-    account_info: dict[int, dict] = {}
-    for account in accounts:
-        creds = dict(account.credentials or {})
-        dialogs = creds.get("dialogs_cache")
-        if not isinstance(dialogs, list):
-            dialogs = []
-
-        if not dialogs:
-            try:
-                dialogs = refresh_account_dialogs_sync(creds, limit=700)
-            except Exception:
-                dialogs = []
-            if dialogs:
-                creds["dialogs_cache"] = dialogs
-                creds["dialogs_cached_at"] = now.isoformat()
-                account.credentials = creds
-                db.add(account)
-
-        queued_jobs = (
-            db.scalar(
-                select(func.count())
-                .select_from(ParseJob)
-                .where(
-                    ParseJob.parser_type == ParserType.telegram,
-                    ParseJob.account_id == account.id,
-                    ParseJob.status.in_([JobStatus.pending, JobStatus.running, JobStatus.retry]),
-                )
-            )
-            or 0
-        )
-
-        account_info[account.id] = {
-            "account": account,
-            "dialogs": dialogs,
-            "base_score": compute_account_load_score(account, queued_jobs=queued_jobs, now=now),
-            "assigned": 0,
-        }
-
-    created_targets = 0
-    linked_accounts = 0
-    scheduled = 0
-    scheduled_target_ids: set[int] = set()
-    target_config = _telegram_target_config(
-        limit=limit,
-        poll_interval_seconds=poll_interval_seconds,
-        live_enabled=live_enabled,
-        gapfill_limit=gapfill_limit,
-        participants_sync_enabled=participants_sync_enabled,
-        participants_sync_interval_seconds=participants_sync_interval_seconds,
-        participants_limit=participants_limit,
-        backfill_enabled=backfill_enabled,
-        backfill_mode=backfill_mode,
-        backfill_from=backfill_from,
-        backfill_to=backfill_to,
-        backfill_chunk_days=backfill_chunk_days,
-        backfill_limit=backfill_limit,
-    )
-
+    created = []
     for entry in entries:
-        normalized_entry = normalize_telegram_identifier(entry)
-        matches: list[tuple[ParserAccount, dict]] = []
-        for account in accounts:
-            dialog = find_dialog_match(entry, account_info[account.id]["dialogs"])
-            if dialog:
-                matches.append((account, dialog))
-
-        if matches:
-            canonical_identifier = normalize_telegram_identifier(str(matches[0][1].get("identifier") or normalized_entry or entry))
-            canonical_name = str(matches[0][1].get("title") or canonical_identifier)
-            candidates = [account for account, _ in matches]
-        else:
-            canonical_identifier = normalized_entry or str(entry).strip()
-            canonical_name = str(entry).strip()
-            candidates = list(accounts)
-
-        if not canonical_identifier:
+        try:
+            target = telegram_onboarding.onboard(db, raw_input=entry, owner_user_id=int(user.id), allow_join=True)
+            created.append(target.id)
+        except ValueError:
             continue
-
-        target_stmt = select(Target).where(
-            Target.parser_type == ParserType.telegram,
-            Target.identifier == canonical_identifier,
-        )
-        if not _is_admin(user):
-            target_stmt = target_stmt.where(Target.owner_user_id == int(user.id))
-        target = db.execute(target_stmt).scalar_one_or_none()
-
-        selected_account = sorted(
-            candidates,
-            key=lambda account: account_info[account.id]["base_score"] + (account_info[account.id]["assigned"] * 2.0),
-        )[0]
-        account_info[selected_account.id]["assigned"] += 1
-
-        owner_user_id = selected_account.owner_user_id or int(user.id)
-        if target:
-            target = _ensure_target_access(target, user)
-            target.is_active = True
-            if not target.name:
-                target.name = canonical_name
-            if not target.config:
-                target.config = dict(target_config)
-        else:
-            target = Target(
-                parser_type=ParserType.telegram,
-                name=canonical_name,
-                identifier=canonical_identifier,
-                owner_user_id=owner_user_id,
-                config=dict(target_config),
-                is_active=True,
-            )
-            db.add(target)
-            db.flush()
-            created_targets += 1
-
-        existing_link = db.execute(
-            select(TargetAccountLink).where(
-                TargetAccountLink.target_id == target.id,
-                TargetAccountLink.account_id == selected_account.id,
-            )
-        ).scalar_one_or_none()
-        if existing_link:
-            existing_link.is_active = True
-            existing_link.auto_detected = True
-            existing_link.last_checked_at = now
-            if existing_link.owner_user_id is None:
-                existing_link.owner_user_id = owner_user_id
-        else:
-            db.add(
-                TargetAccountLink(
-                    target_id=target.id,
-                    account_id=selected_account.id,
-                    owner_user_id=owner_user_id,
-                    is_active=True,
-                    auto_detected=True,
-                    last_checked_at=now,
-                )
-            )
-            linked_accounts += 1
-
-        if run_now and int(target.id) not in scheduled_target_ids:
-            schedule_target_once(db, target)
-            scheduled += 1
-            scheduled_target_ids.add(int(target.id))
-
     db.commit()
-    return {
-        "ok": True,
-        "processed": len(entries),
-        "created_targets": int(created_targets),
-        "linked_accounts": int(linked_accounts),
-        "scheduled": int(scheduled),
-    }
+    return {"created": len(created), "target_ids": created}
 
 
 @router.get("/telegram/targets-overview")
