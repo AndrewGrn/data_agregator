@@ -81,6 +81,7 @@ def default_onboard_config() -> dict[str, Any]:
         "participants_limit": 1000,
         "comments_enabled": True,
         "gapfill_comments_enabled": True,
+        "media_enabled": False,  # per-channel opt-in; see TelegramPlugin._fetch_messages
         "backfill": {
             "enabled": True,
             "mode": "full",

@@ -268,6 +268,7 @@ def _telegram_target_config(
     comments_recheck_posts: int = 30,
     is_risky: bool = False,
     risk_label: str = "",
+    media_enabled: bool = False,
 ) -> dict:
     normalized_mode = str(backfill_mode or "range").strip().lower()
     if normalized_mode not in {"range", "full"}:
@@ -296,6 +297,7 @@ def _telegram_target_config(
         "participants_limit": max(int(participants_limit), 1),
         "is_risky": bool(is_risky),
         "risk_label": str(risk_label or "").strip(),
+        "media_enabled": bool(media_enabled),
         "backfill": {
             "enabled": bool(backfill_enabled),
             "mode": normalized_mode,
@@ -489,6 +491,7 @@ def _telegram_target_row(
         "name": target.name,
         "identifier": target.identifier,
         "kind": (target.config or {}).get("kind"),
+        "media_enabled": bool((target.config or {}).get("media_enabled", False)),
         "is_active": bool(target.is_active),
         "onboarding_status": target.onboarding_status.value if target.onboarding_status else "ready",
         "onboarding_step": target.onboarding_step or "idle",
@@ -2683,7 +2686,13 @@ def update_telegram_target(target_id: int, payload: dict, db: Session = Depends(
         comments_recheck_posts=int(payload.get("comments_recheck_posts") or current_cfg.get("comments_recheck_posts", 30)),
         is_risky=bool(payload.get("is_risky", current_cfg.get("is_risky", False))),
         risk_label=str(payload.get("risk_label", current_cfg.get("risk_label", ""))).strip(),
+        media_enabled=bool(payload.get("media_enabled", current_cfg.get("media_enabled", False))),
     )
+    # _telegram_target_config() rebuilds the dict from its arguments only;
+    # keys the onboarding flow wrote (kind, quiet_until, invite_hash) must survive.
+    for key in ("kind", "quiet_until", "invite_hash", "participants_unavailable"):
+        if key in current_cfg and key not in target.config:
+            target.config[key] = current_cfg[key]
     db.commit()
     return {"ok": True, "target_id": int(target.id)}
 

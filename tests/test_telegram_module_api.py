@@ -463,3 +463,22 @@ def test_onboard_does_not_touch_another_users_target(pg_session):
     target = pg_session.get(Target, target.id)
     assert target.onboarding_step == "joined", "foreign target must not be re-queued"
     assert pg_session.query(ParseJob).count() == 0
+
+
+def test_media_is_off_by_default_and_toggles_per_target(client):
+    c, session, _ = client
+    row = c.post("/api/modules/telegram/onboard", json={"input": "@durov"}).json()
+    assert row["media_enabled"] is False
+
+    target = session.get(Target, row["id"])
+    target.config = {**target.config, "kind": "channel", "quiet_until": "2026-01-01T00:00:00+00:00"}
+    session.commit()
+
+    assert c.post(f"/api/modules/telegram/targets/{row['id']}/update", json={"media_enabled": True}).status_code == 200
+    session.refresh(target)
+    assert target.config["media_enabled"] is True
+    assert target.config["kind"] == "channel", "update must not wipe onboarding-written keys"
+    assert target.config["quiet_until"] == "2026-01-01T00:00:00+00:00"
+
+    rows = c.get("/api/modules/telegram").json()["targets"]
+    assert next(r for r in rows if r["id"] == row["id"])["media_enabled"] is True

@@ -8,6 +8,7 @@ export interface TelegramTargetRow {
   name: string;
   identifier: string;
   kind: TargetKind;
+  media_enabled: boolean;
   is_active: boolean;
   onboarding_status: "ready" | "needs_account" | "blocked";
   onboarding_step: OnboardingStep;

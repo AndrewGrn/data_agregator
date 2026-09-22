@@ -84,3 +84,17 @@ def test_file_entries_round_trip():
         {"source_ref": "1", "filename": "a.jpg", "mime": "image/jpeg", "size": 3, "sha256": "deadbeef"}
     ]
     assert telegram_plugin._file_entries(None) == []
+
+
+def test_media_disabled_skips_download_entirely(monkeypatch):
+    """Media is opt-in per channel: max_bytes=0 means never touch the network."""
+    called = []
+
+    async def _fake_download(self, file=bytes):
+        called.append(True)
+        return b"x"
+
+    monkeypatch.setattr(_FakeMsg, "download_media", _fake_download)
+    msg = _FakeMsg(media=object(), file=_FakeFile(size=10), data=b"x")
+    assert _run(telegram_plugin._download_media(msg, max_bytes=0)) is None
+    assert called == []

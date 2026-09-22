@@ -1,4 +1,4 @@
-import { Hash, Users, MessageCircle, Pause, Play, RefreshCw, Repeat, RotateCcw, Trash2 } from "lucide-react";
+import { Hash, Users, MessageCircle, Paperclip, Pause, Play, RefreshCw, Repeat, RotateCcw, Trash2 } from "lucide-react";
 import { DataRow } from "../ui/data-row";
 import { IconButton } from "../ui/icon-button";
 import { StatusDot } from "../ui/status-dot";
@@ -10,6 +10,7 @@ import {
   runTelegramTargetNow,
   startTelegramTarget,
   stopTelegramTarget,
+  updateTelegramTarget,
   type TelegramTargetRow,
 } from "../../api/telegram";
 
@@ -87,6 +88,12 @@ export function TargetRow({ row, onChanged }: { row: TelegramTargetRow; onChange
             icon={row.is_active ? Pause : Play}
             onClick={() => act(() => (row.is_active ? stopTelegramTarget(row.id) : startTelegramTarget(row.id)))}
             disabled={inProgress}
+          />
+          <IconButton
+            label={row.media_enabled ? "Медіа: вкл. Вимкнути завантаження файлів" : "Медіа: вимк. Завантажувати файли"}
+            icon={Paperclip}
+            variant={row.media_enabled ? "outline" : "ghost"}
+            onClick={() => act(() => updateTelegramTarget(row.id, { media_enabled: !row.media_enabled }))}
           />
           <IconButton
             label="Бекфіл зараз"

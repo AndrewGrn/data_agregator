@@ -140,7 +140,7 @@ async def _download_media(msg: Any, max_bytes: int) -> FileRef | None:
     Returns None when there is no media, it exceeds the limit, or the object
     store is unavailable — the event is still saved, just without the file.
     """
-    if not getattr(msg, "media", None):
+    if max_bytes <= 0 or not getattr(msg, "media", None):
         return None
 
     file_obj = getattr(msg, "file", None)
@@ -447,6 +447,7 @@ class TelegramPlugin(ParserPlugin):
         comments_limit: int = 50,
         comments_depth: int = 2,
         comments_recheck_posts: int = 100,
+        media_enabled: bool = False,
     ) -> tuple[list[dict[str, Any]], int, int | None]:
         creds = account.credentials or {}
         api_id = creds.get("api_id")
@@ -489,7 +490,9 @@ class TelegramPlugin(ParserPlugin):
                 except Exception:
                     logger.exception("telegram forum topics fetch failed for %s", identifier)
 
-            max_bytes = int(get_settings().media_max_bytes)
+            # Media is opt-in per channel (config.media_enabled): downloading every
+            # photo and video inline made a 300-post batch take 15+ minutes.
+            max_bytes = int(get_settings().media_max_bytes) if media_enabled else 0
             messages: list[dict[str, Any]] = []
             root_post_ids: list[int] = []
             root_count = 0
@@ -724,6 +727,7 @@ class TelegramPlugin(ParserPlugin):
         comments_recheck_posts = max(int(config.get("comments_recheck_posts", 30)), 1)
         if is_backfill and not bool(config.get("backfill_comments_enabled", True)):
             comments_enabled = False
+        media_enabled = bool(config.get("media_enabled", False))
 
         if mode == "participants_sync":
             participants_limit = max(int(job.payload.get("participants_limit", config.get("participants_limit", 1000))), 1)
@@ -771,6 +775,7 @@ class TelegramPlugin(ParserPlugin):
                             comments_limit=comments_limit,
                             comments_depth=comments_depth,
                             comments_recheck_posts=comments_recheck_posts,
+                            media_enabled=media_enabled,
                         ),
                         timeout=max(int(settings.telegram_fetch_timeout_seconds), 30),
                     )
