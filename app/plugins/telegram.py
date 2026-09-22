@@ -8,7 +8,9 @@ from typing import Any
 from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 from telethon import TelegramClient
+from telethon.errors import ChatAdminRequiredError
 from telethon.sessions import StringSession
+from telethon.tl.functions.channels import GetForumTopicsRequest
 
 from app.config import get_settings
 from app.models import OnboardingStatus, ParseJob, ParserAccount, ParserType, Target, TargetAccountLink, TelegramOffset
@@ -48,6 +50,24 @@ def _entity_ref(identifier: str | int) -> str | int:
 
 
 _EVENT_KINDS = {"telegram_message": "message", "telegram_comment": "comment"}
+
+
+def _message_topic_id(msg: Any) -> int | None:
+    """Return the forum topic root id a message belongs to, or None.
+
+    Telethon marks a topic message via ``msg.reply_to.forum_topic``. The
+    topic's identity is ``reply_to.reply_to_top_id`` — except for the
+    topic's own root message, which has no ``reply_to_top_id`` (it isn't a
+    reply to anything) and is its own identity.
+    """
+    reply_to = getattr(msg, "reply_to", None)
+    if reply_to is not None and getattr(reply_to, "forum_topic", False):
+        return int(getattr(reply_to, "reply_to_top_id", None) or msg.id)
+    return None
+
+
+def _use_aggressive_participants(limit: int, threshold: int, enabled: bool) -> bool:
+    return bool(enabled) and int(limit) > int(threshold)
 
 
 def run_onboard_job(session: Session, job: ParseJob, target: Target) -> None:
@@ -91,9 +111,12 @@ def normalize_telegram_payload(item: dict) -> dict:
     root_post_id = item.get("root_post_id")
     parent_message_id = item.get("parent_message_id")
     chat_id = item.get("chat_id")
+    topic_id = item.get("topic_id")
 
     if is_comment and root_post_id is not None:
         thread_id = str(root_post_id)
+    elif topic_id is not None:
+        thread_id = str(topic_id)
     elif chat_id is not None:
         thread_id = str(chat_id)
     else:
@@ -279,9 +302,12 @@ class TelegramPlugin(ParserPlugin):
         jobs: list[JobSpec] = []
         config = dict(target.config or {})
         poll_interval_seconds = max(int(config.get("poll_interval_seconds", 300)), 30)
-        participants_sync_enabled = bool(config.get("participants_sync_enabled", True))
+        participants_unavailable = bool(config.get("participants_unavailable"))
+        participants_sync_enabled = bool(config.get("participants_sync_enabled", True)) and not participants_unavailable
         participants_sync_interval_seconds = max(int(config.get("participants_sync_interval_seconds", 3600)), 300)
         participants_limit = max(int(config.get("participants_limit", 1000)), 1)
+        participants_aggressive_enabled = bool(config.get("participants_aggressive_enabled", True))
+        participants_aggressive_threshold = max(int(config.get("participants_aggressive_threshold", 2000)), 1)
         live_enabled = bool(config.get("live_enabled", True))
         gapfill_limit = max(int(config.get("gapfill_limit", config.get("limit", settings.telegram_fetch_limit))), 1)
         backfill_mode = self._backfill_mode(target)
@@ -378,6 +404,8 @@ class TelegramPlugin(ParserPlugin):
                             "mode": "participants_sync",
                             "identifier": target.identifier,
                             "participants_limit": participants_limit,
+                            "participants_aggressive_enabled": participants_aggressive_enabled,
+                            "participants_aggressive_threshold": participants_aggressive_threshold,
                             "min_interval_seconds": participants_sync_interval_seconds,
                         },
                         priority=220,
@@ -438,6 +466,29 @@ class TelegramPlugin(ParserPlugin):
                 raise ValueError(f"Telegram account '{account.label}' is not authorized.")
             entity = _entity_ref(identifier)
 
+            topic_titles: dict[int, str] = {}
+            try:
+                full_entity = await client.get_entity(entity)
+            except Exception:
+                full_entity = None
+            if full_entity is not None and getattr(full_entity, "forum", False):
+                try:
+                    # ponytail: single page (Telegram's own per-call cap), good
+                    # enough for the vast majority of forums; paginate with
+                    # offset_topic/offset_id if a target ever has >100 topics.
+                    topics_result = await client(
+                        GetForumTopicsRequest(
+                            channel=full_entity,
+                            offset_date=None,
+                            offset_id=0,
+                            offset_topic=0,
+                            limit=100,
+                        )
+                    )
+                    topic_titles = {int(t.id): str(t.title) for t in getattr(topics_result, "topics", [])}
+                except Exception:
+                    logger.exception("telegram forum topics fetch failed for %s", identifier)
+
             max_bytes = int(get_settings().media_max_bytes)
             messages: list[dict[str, Any]] = []
             root_post_ids: list[int] = []
@@ -470,6 +521,7 @@ class TelegramPlugin(ParserPlugin):
                 if oldest_root_message_id is None or msg_id < oldest_root_message_id:
                     oldest_root_message_id = msg_id
                 file_ref = await _download_media(msg, max_bytes)
+                topic_id = _message_topic_id(msg)
                 messages.append(
                     {
                         "event_type": "telegram_message",
@@ -477,6 +529,8 @@ class TelegramPlugin(ParserPlugin):
                         "date": msg.date.isoformat() if msg.date else None,
                         "text": msg.message,
                         "chat_id": chat_id,
+                        "topic_id": topic_id,
+                        "topic_title": topic_titles.get(topic_id) if topic_id is not None else None,
                         "sender": {
                             "id": getattr(sender, "id", None),
                             "username": getattr(sender, "username", None),
@@ -521,6 +575,7 @@ class TelegramPlugin(ParserPlugin):
                             or getattr(cmt.peer_id, "user_id", None)
                         )
                         cmt_file_ref = await _download_media(cmt, max_bytes)
+                        cmt_topic_id = _message_topic_id(cmt)
                         messages.append(
                             {
                                 "event_type": "telegram_comment",
@@ -531,6 +586,8 @@ class TelegramPlugin(ParserPlugin):
                                 "date": cmt.date.isoformat() if cmt.date else None,
                                 "text": cmt.message,
                                 "chat_id": cmt_chat_id,
+                                "topic_id": cmt_topic_id,
+                                "topic_title": topic_titles.get(cmt_topic_id) if cmt_topic_id is not None else None,
                                 "sender": {
                                     "id": getattr(sender, "id", None),
                                     "username": getattr(sender, "username", None),
@@ -570,7 +627,14 @@ class TelegramPlugin(ParserPlugin):
             return "participant_restricted", not left_flag, joined_at
         return "participant_member", True, joined_at
 
-    async def _fetch_participants(self, account: ParserAccount, identifier: str, limit: int) -> list[dict[str, Any]]:
+    async def _fetch_participants(
+        self,
+        account: ParserAccount,
+        identifier: str,
+        limit: int,
+        aggressive_enabled: bool = True,
+        aggressive_threshold: int = 2000,
+    ) -> list[dict[str, Any]]:
         creds = account.credentials or {}
         api_id = creds.get("api_id")
         api_hash = creds.get("api_hash")
@@ -595,7 +659,10 @@ class TelegramPlugin(ParserPlugin):
             if chat_id and chat_id > 0 and (getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False)):
                 chat_id = -1000000000000 + chat_id
 
-            async for participant in client.iter_participants(entity, limit=max(int(limit), 1)):
+            use_aggressive = _use_aggressive_participants(limit, aggressive_threshold, aggressive_enabled)
+            async for participant in client.iter_participants(
+                entity, limit=max(int(limit), 1), aggressive=use_aggressive
+            ):
                 membership_obj = getattr(participant, "participant", None)
                 membership_status, membership_is_active, joined_at = self._participant_status(membership_obj)
                 payloads.append(
@@ -622,6 +689,8 @@ class TelegramPlugin(ParserPlugin):
                         "raw": participant.to_dict(),
                     }
                 )
+        except ChatAdminRequiredError:
+            raise
         except Exception:
             payloads = []
         finally:
@@ -658,10 +727,19 @@ class TelegramPlugin(ParserPlugin):
 
         if mode == "participants_sync":
             participants_limit = max(int(job.payload.get("participants_limit", config.get("participants_limit", 1000))), 1)
+            aggressive_enabled = bool(
+                job.payload.get("participants_aggressive_enabled", config.get("participants_aggressive_enabled", True))
+            )
+            aggressive_threshold = max(
+                int(job.payload.get("participants_aggressive_threshold", config.get("participants_aggressive_threshold", 2000))),
+                1,
+            )
             try:
                 messages = asyncio.run(
                     asyncio.wait_for(
-                        self._fetch_participants(account, identifier, participants_limit),
+                        self._fetch_participants(
+                            account, identifier, participants_limit, aggressive_enabled, aggressive_threshold
+                        ),
                         timeout=max(int(settings.telegram_fetch_timeout_seconds), 30),
                     )
                 )
@@ -669,6 +747,14 @@ class TelegramPlugin(ParserPlugin):
                 raise TimeoutError(
                     f"Telegram participants fetch timeout after {max(int(settings.telegram_fetch_timeout_seconds), 30)}s"
                 ) from exc
+            except ChatAdminRequiredError:
+                new_config = dict(target.config or {})
+                new_config["participants_unavailable"] = {
+                    "reason": "chat_admin_required",
+                    "detected_at": dt.datetime.now(dt.UTC).isoformat(),
+                }
+                target.config = new_config
+                return []
         else:
             try:
                 messages, root_count, oldest_root_message_id = asyncio.run(
