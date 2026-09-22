@@ -84,7 +84,7 @@ function AccountsTab() {
       {loading ? null : accounts.length === 0 ? (
         <EmptyState icon={Users2} title="Ще немає підключених акаунтів" hint="Підключіть акаунт, щоб система могла вступати в канали." />
       ) : (
-        <div className="max-w-4xl divide-y rounded-lg border bg-card">
+        <div className="divide-y rounded-lg border bg-card">
           {accounts.map((row) => (
             <AccountRow key={row.id} row={row} onChanged={load} onReauth={setReauthAccount} />
           ))}
