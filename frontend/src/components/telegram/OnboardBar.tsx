@@ -33,6 +33,7 @@ export function OnboardBar({ onQueued }: { onQueued: (row: TelegramTargetRow) =>
           <Link2 className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             className="pl-9"
+            name="telegram-onboard-input"
             placeholder="Посилання, @канал або ID — система сама обере акаунт і вступить"
             value={value}
             onChange={(e) => setValue(e.target.value)}
