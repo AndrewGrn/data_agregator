@@ -30,7 +30,7 @@
 ## File Structure
 
 **Создаются:**
-- `alembic/versions/0017_telegram_onboarding_and_liveness.py` — колонки, дедупликация связей, частичный индекс.
+- `alembic/versions/0017_tg_onboarding_liveness.py` — колонки, дедупликация связей, частичный индекс.
 - `app/services/telegram_onboarding.py` — `onboard()`, `pick_account()`, `join_channel()`, темп вступлений, `run_onboard_job()`. Отдельный модуль: вызывается из API, из плагина и из failover.
 - `app/services/telegram_liveness.py` — `check_accounts_liveness()`, `failover_account()`. Отдельно от онбординга: другая частота, другой триггер.
 - `tests/test_telegram_identifier.py`, `tests/test_defer_job.py`, `tests/test_telegram_onboarding.py`, `tests/test_telegram_liveness.py`, `tests/test_telegram_module_api.py`.
@@ -51,7 +51,7 @@
 
 **Files:**
 - Modify: `app/models.py` (классы `ParserAccount`, `Target`, блок `Index(...)` в конце)
-- Create: `alembic/versions/0017_telegram_onboarding_and_liveness.py`
+- Create: `alembic/versions/0017_tg_onboarding_liveness.py`
 - Test: `tests/test_one_active_link.py`
 
 **Interfaces:**
@@ -176,13 +176,13 @@ Expected: PASS (4 passed). SQLite поддерживает частичные и
 
 - [ ] **Step 5: Write the migration**
 
-Создать `alembic/versions/0017_telegram_onboarding_and_liveness.py`:
+Создать `alembic/versions/0017_tg_onboarding_liveness.py`:
 
 ```python
 """telegram onboarding + liveness: account pool/alive/join-window columns,
 target onboarding step, one active link per target
 
-Revision ID: 0017_telegram_onboarding_and_liveness
+Revision ID: 0017_tg_onboarding_liveness
 Revises: 0016_search_trigram_indexes
 """
 
@@ -191,7 +191,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0017_telegram_onboarding_and_liveness"
+revision = "0017_tg_onboarding_liveness"
 down_revision = "0016_search_trigram_indexes"
 branch_labels = None
 depends_on = None
@@ -269,7 +269,7 @@ Expected: все зелёные (сейчас 91 passed + 4 новых).
 - [ ] **Step 8: Commit**
 
 ```bash
-git add app/models.py alembic/versions/0017_telegram_onboarding_and_liveness.py tests/test_one_active_link.py
+git add app/models.py alembic/versions/0017_tg_onboarding_liveness.py tests/test_one_active_link.py
 git commit -m "feat(telegram): колонки пула/живости/темпа, шаг онбординга, один активный аккаунт на таргет"
 ```
 
@@ -2204,6 +2204,652 @@ Run: `python -c "from app.main import app; print('ok')"` → `ok`.
 ```bash
 git add app/routers/api.py tests/test_telegram_module_api.py
 git commit -m "feat(telegram): API онбординга, обзор аккаунтов с живостью, pool-mode, переназначение"
+```
+
+---
+
+### Task 8: Вход аккаунта по QR-коду
+
+Спека §6 «Подключение аккаунта». QR-сессии живут в памяти процесса API:
+`ParseJob.target_id` — `NOT NULL`, у входа нет таргета, воркер не подходит; а
+клиент, ждущий скан, и запрос с 2FA-паролем должны быть в одном процессе.
+Потолок — один uvicorn-воркер (так в compose).
+
+**Files:**
+- Create: `app/services/telegram_qr_login.py`
+- Modify: `app/config.py` (`telegram_qr_login_ttl_seconds`), `requirements.txt` (`segno==1.6.6`), `app/routers/api.py`
+- Test: `tests/test_telegram_qr_login.py`, `tests/test_telegram_qr_api.py`
+
+**Interfaces:**
+- Produces:
+  - `async start_qr_login(*, api_id: int, api_hash: str, owner_user_id: int, label: str, hourly_limit: int, client_factory=...) -> QrSession`
+  - `get_qr_session(token: str) -> QrSession | None`
+  - `submit_password(token: str, password: str) -> bool`
+  - `async cancel_qr_login(token: str) -> None`
+  - `public_view(s: QrSession) -> dict` → `{token, status, url, qr_svg, error, account_id, expires_at}`
+  - `QrSession.status ∈ {"pending", "password_needed", "done", "expired", "error"}`
+  - Эндпоинты: `POST /modules/telegram/accounts/qr-login/start`, `GET /modules/telegram/accounts/qr-login/{token}`, `POST …/qr-login/{token}/password`, `POST …/qr-login/{token}/cancel`.
+
+- [ ] **Step 1: Dependency and setting**
+
+Run: `pip install segno==1.6.6` — **это единственная задача плана, где `pip install` разрешён.** Добавить строку `segno==1.6.6` в `requirements.txt`. В `app/config.py` рядом с `telegram_join_*`:
+
+```python
+    telegram_qr_login_ttl_seconds: int = 180
+```
+
+- [ ] **Step 2: Write the failing unit tests**
+
+Создать `tests/test_telegram_qr_login.py`:
+
+```python
+from __future__ import annotations
+
+import asyncio
+import datetime as dt
+from types import SimpleNamespace
+
+import pytest
+from telethon.errors import SessionPasswordNeededError
+
+from app.services import telegram_qr_login as qr
+
+
+class _FakeQr:
+    """Scripted QRLogin: each wait() pops the next outcome."""
+
+    def __init__(self, outcomes: list[str]):
+        self.outcomes = list(outcomes)
+        self.recreates = 0
+        self.url = "tg://login?token=T0"
+        self.expires = dt.datetime.now(dt.UTC) + dt.timedelta(seconds=30)
+
+    async def wait(self, timeout=None):
+        outcome = self.outcomes.pop(0)
+        if outcome == "timeout":
+            raise asyncio.TimeoutError
+        if outcome == "password":
+            raise SessionPasswordNeededError(request=None)
+        return SimpleNamespace(id=1)
+
+    async def recreate(self):
+        self.recreates += 1
+        self.url = f"tg://login?token=T{self.recreates}"
+        self.expires = dt.datetime.now(dt.UTC) + dt.timedelta(seconds=30)
+
+
+class _FakeClient:
+    def __init__(self, fake_qr: _FakeQr):
+        self._qr = fake_qr
+        self.signed_in_with: str | None = None
+        self.disconnected = False
+        self.session = SimpleNamespace(save=lambda: "SESSION-STRING")
+
+    async def connect(self): ...
+    async def disconnect(self): self.disconnected = True
+    async def qr_login(self): return self._qr
+    async def sign_in(self, password=None): self.signed_in_with = password
+    async def get_me(self): return SimpleNamespace(username="Alice", phone="380671234567", id=42)
+
+
+def _start(outcomes, **kw):
+    fake = _FakeQr(outcomes)
+    client = _FakeClient(fake)
+
+    async def go():
+        s = await qr.start_qr_login(
+            api_id=1, api_hash="h", owner_user_id=7, label="acc", hourly_limit=120,
+            client_factory=lambda api_id, api_hash: client, **kw,
+        )
+        return s
+
+    return asyncio.run(_wrap(go, fake, client))
+
+
+async def _wrap(go, fake, client):
+    s = await go()
+    return s, fake, client
+
+
+def _finish(s):
+    """Await the background task inside a fresh loop (tests are sync)."""
+    async def wait():
+        await s._task
+    asyncio.run(wait())
+
+
+def test_start_exposes_url_and_svg():
+    async def go():
+        fake = _FakeQr(["ok"])
+        client = _FakeClient(fake)
+        s = await qr.start_qr_login(api_id=1, api_hash="h", owner_user_id=7, label="acc", hourly_limit=120,
+                                    client_factory=lambda a, b: client)
+        assert s.status == "pending"
+        assert s.url == "tg://login?token=T0"
+        assert s.qr_svg.startswith("data:image/svg+xml")
+        assert qr.get_qr_session(s.token) is s
+        await s._task
+        return s, client
+
+    s, client = asyncio.run(go())
+    assert s.status == "done"
+    assert s.session_string == "SESSION-STRING"
+    assert s.me["username"] == "alice"
+    assert client.disconnected is True
+
+
+def test_token_timeout_recreates_and_updates_url():
+    async def go():
+        fake = _FakeQr(["timeout", "timeout", "ok"])
+        client = _FakeClient(fake)
+        s = await qr.start_qr_login(api_id=1, api_hash="h", owner_user_id=7, label="acc", hourly_limit=120,
+                                    client_factory=lambda a, b: client)
+        await s._task
+        return s, fake
+
+    s, fake = asyncio.run(go())
+    assert fake.recreates == 2
+    assert s.url == "tg://login?token=T2"
+    assert s.status == "done"
+
+
+def test_password_needed_then_submit_signs_in():
+    async def go():
+        fake = _FakeQr(["password"])
+        client = _FakeClient(fake)
+        s = await qr.start_qr_login(api_id=1, api_hash="h", owner_user_id=7, label="acc", hourly_limit=120,
+                                    client_factory=lambda a, b: client)
+        for _ in range(50):
+            if s.status == "password_needed":
+                break
+            await asyncio.sleep(0.01)
+        assert s.status == "password_needed"
+        assert qr.submit_password(s.token, "cloud-pw") is True
+        await s._task
+        return s, client
+
+    s, client = asyncio.run(go())
+    assert client.signed_in_with == "cloud-pw"
+    assert s.status == "done"
+
+
+def test_submit_password_when_not_needed_is_rejected():
+    async def go():
+        fake = _FakeQr(["ok"])
+        client = _FakeClient(fake)
+        s = await qr.start_qr_login(api_id=1, api_hash="h", owner_user_id=7, label="acc", hourly_limit=120,
+                                    client_factory=lambda a, b: client)
+        await s._task
+        return s
+
+    s = asyncio.run(go())
+    assert qr.submit_password(s.token, "x") is False
+    assert qr.submit_password("no-such-token", "x") is False
+
+
+def test_ttl_expiry_marks_expired(monkeypatch):
+    monkeypatch.setattr(qr.settings, "telegram_qr_login_ttl_seconds", 0)
+
+    async def go():
+        fake = _FakeQr(["timeout"] * 5)
+        client = _FakeClient(fake)
+        s = await qr.start_qr_login(api_id=1, api_hash="h", owner_user_id=7, label="acc", hourly_limit=120,
+                                    client_factory=lambda a, b: client)
+        await s._task
+        return s, client
+
+    s, client = asyncio.run(go())
+    assert s.status == "expired"
+    assert client.disconnected is True
+
+
+def test_cancel_removes_session():
+    async def go():
+        fake = _FakeQr(["timeout"] * 100)
+        client = _FakeClient(fake)
+        s = await qr.start_qr_login(api_id=1, api_hash="h", owner_user_id=7, label="acc", hourly_limit=120,
+                                    client_factory=lambda a, b: client)
+        await qr.cancel_qr_login(s.token)
+        return s, client
+
+    s, client = asyncio.run(go())
+    assert qr.get_qr_session(s.token) is None
+    assert client.disconnected is True
+
+
+def test_public_view_never_leaks_session_string():
+    async def go():
+        fake = _FakeQr(["ok"])
+        client = _FakeClient(fake)
+        s = await qr.start_qr_login(api_id=1, api_hash="h", owner_user_id=7, label="acc", hourly_limit=120,
+                                    client_factory=lambda a, b: client)
+        await s._task
+        return s
+
+    s = asyncio.run(go())
+    view = qr.public_view(s)
+    assert set(view) == {"token", "status", "url", "qr_svg", "error", "account_id", "expires_at"}
+    assert "SESSION-STRING" not in str(view)
+```
+
+Удалить из файла вспомогательные `_start`/`_wrap`/`_finish`, если после написания они не используются — они здесь как черновик, тесты выше самодостаточны.
+
+- [ ] **Step 3: Run to verify they fail**
+
+Run: `pytest tests/test_telegram_qr_login.py -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'app.services.telegram_qr_login'`.
+
+- [ ] **Step 4: Write the service**
+
+Создать `app/services/telegram_qr_login.py`:
+
+```python
+from __future__ import annotations
+
+import asyncio
+import datetime as dt
+import logging
+import secrets
+from dataclasses import dataclass, field
+from typing import Any, Callable
+
+import segno
+from telethon import TelegramClient
+from telethon.errors import SessionPasswordNeededError
+from telethon.sessions import StringSession
+
+from app.config import get_settings
+
+logger = logging.getLogger(__name__)
+settings = get_settings()
+
+# ponytail: in-process registry; one uvicorn worker (as in compose). Move to
+# Redis/DB if the API ever runs with several workers.
+_SESSIONS: dict[str, "QrSession"] = {}
+_PRUNE_AFTER = dt.timedelta(minutes=15)
+
+ClientFactory = Callable[[int, str], Any]
+
+
+@dataclass
+class QrSession:
+    token: str
+    api_id: int
+    api_hash: str
+    owner_user_id: int
+    label: str
+    hourly_limit: int
+    status: str = "pending"
+    url: str | None = None
+    qr_svg: str | None = None
+    error: str | None = None
+    session_string: str | None = None
+    me: dict[str, Any] = field(default_factory=dict)
+    account_id: int | None = None
+    created_at: dt.datetime = field(default_factory=lambda: dt.datetime.now(dt.UTC))
+    expires_at: dt.datetime | None = None
+    _client: Any = None
+    _qr: Any = None
+    _password: asyncio.Future | None = None
+    _task: asyncio.Task | None = None
+
+
+def _default_client_factory(api_id: int, api_hash: str) -> Any:
+    return TelegramClient(StringSession(), api_id, api_hash)
+
+
+def _svg(url: str) -> str:
+    return segno.make(url, error="m").svg_data_uri(scale=6, border=1)
+
+
+def _prune(now: dt.datetime) -> None:
+    for token in [t for t, s in _SESSIONS.items() if now - s.created_at > _PRUNE_AFTER]:
+        _SESSIONS.pop(token, None)
+
+
+async def start_qr_login(
+    *,
+    api_id: int,
+    api_hash: str,
+    owner_user_id: int,
+    label: str,
+    hourly_limit: int,
+    client_factory: ClientFactory = _default_client_factory,
+) -> QrSession:
+    now = dt.datetime.now(dt.UTC)
+    _prune(now)
+    s = QrSession(
+        token=secrets.token_urlsafe(24),
+        api_id=int(api_id),
+        api_hash=str(api_hash),
+        owner_user_id=int(owner_user_id),
+        label=label,
+        hourly_limit=int(hourly_limit),
+        expires_at=now + dt.timedelta(seconds=int(settings.telegram_qr_login_ttl_seconds)),
+    )
+    s._client = client_factory(s.api_id, s.api_hash)
+    await s._client.connect()
+    s._qr = await s._client.qr_login()
+    s.url = s._qr.url
+    s.qr_svg = _svg(s.url)
+    s._task = asyncio.create_task(_run(s))
+    _SESSIONS[s.token] = s
+    logger.info("qr-login started token=%s owner=%s label=%s", s.token[:8], owner_user_id, label)
+    return s
+
+
+async def _run(s: QrSession) -> None:
+    try:
+        while True:
+            now = dt.datetime.now(dt.UTC)
+            remaining = (s.expires_at - now).total_seconds()
+            if remaining <= 0:
+                s.status = "expired"
+                return
+            token_left = max((s._qr.expires - now).total_seconds(), 0.05)
+            try:
+                await s._qr.wait(timeout=min(token_left, remaining))
+            except asyncio.TimeoutError:
+                await s._qr.recreate()
+                s.url = s._qr.url
+                s.qr_svg = _svg(s.url)
+                continue
+            except SessionPasswordNeededError:
+                s.status = "password_needed"
+                s._password = asyncio.get_running_loop().create_future()
+                try:
+                    password = await asyncio.wait_for(s._password, timeout=max(remaining, 30))
+                except asyncio.TimeoutError:
+                    s.status = "expired"
+                    return
+                await s._client.sign_in(password=password)
+            break
+
+        me = await s._client.get_me()
+        s.me = {
+            "username": (str(getattr(me, "username", "") or "").strip().lower() or None),
+            "phone": (str(getattr(me, "phone", "") or "").strip() or None),
+            "user_id": int(getattr(me, "id", 0) or 0) or None,
+        }
+        s.session_string = s._client.session.save()
+        s.status = "done"
+        logger.info("qr-login done token=%s user=%s", s.token[:8], s.me.get("username"))
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        s.status = "error"
+        s.error = str(exc)[:500]
+        logger.warning("qr-login error token=%s: %s", s.token[:8], exc)
+    finally:
+        try:
+            await s._client.disconnect()
+        except Exception:
+            pass
+
+
+def get_qr_session(token: str) -> QrSession | None:
+    return _SESSIONS.get(str(token or ""))
+
+
+def submit_password(token: str, password: str) -> bool:
+    s = get_qr_session(token)
+    if s is None or s.status != "password_needed" or s._password is None or s._password.done():
+        return False
+    s._password.set_result(password)
+    return True
+
+
+async def cancel_qr_login(token: str) -> None:
+    s = _SESSIONS.pop(str(token or ""), None)
+    if s is None:
+        return
+    if s._task and not s._task.done():
+        s._task.cancel()
+        try:
+            await s._task
+        except (asyncio.CancelledError, Exception):
+            pass
+    try:
+        await s._client.disconnect()
+    except Exception:
+        pass
+
+
+def public_view(s: QrSession) -> dict[str, Any]:
+    return {
+        "token": s.token,
+        "status": s.status,
+        "url": s.url,
+        "qr_svg": s.qr_svg,
+        "error": s.error,
+        "account_id": s.account_id,
+        "expires_at": s.expires_at.isoformat() if s.expires_at else None,
+    }
+```
+
+- [ ] **Step 5: Run unit tests**
+
+Run: `pytest tests/test_telegram_qr_login.py -v`
+Expected: PASS (7 passed). Если `SessionPasswordNeededError(request=None)` не конструируется — проверить сигнатуру в установленном Telethon и поправить **фикстуру**, не сервис.
+
+- [ ] **Step 6: Write the failing API tests**
+
+Создать `tests/test_telegram_qr_api.py` (фабрика `client`/`User` — как в `tests/test_telegram_module_api.py`):
+
+```python
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import select
+
+from app.deps import get_current_user, get_db
+from app.main import app
+from app.models import ParserAccount, User
+from app.services import telegram_qr_login as qr
+
+pytestmark = pytest.mark.postgres
+
+
+class _Qr:
+    def __init__(self):
+        self.url = "tg://login?token=X"
+        import datetime as dt
+        self.expires = dt.datetime.now(dt.UTC) + dt.timedelta(seconds=30)
+    async def wait(self, timeout=None): return SimpleNamespace(id=1)
+    async def recreate(self): ...
+
+
+class _Client:
+    def __init__(self):
+        self.session = SimpleNamespace(save=lambda: "SESSION-STRING")
+    async def connect(self): ...
+    async def disconnect(self): ...
+    async def qr_login(self): return _Qr()
+    async def sign_in(self, password=None): ...
+    async def get_me(self): return SimpleNamespace(username="alice", phone="380671234567", id=42)
+
+
+@pytest.fixture
+def client(pg_session, monkeypatch):
+    admin = User(username="adm", password_hash="x", role="admin", is_admin=True, is_active=True,
+                 totp_enabled=True, totp_confirmed=True)
+    pg_session.add(admin)
+    pg_session.commit()
+    monkeypatch.setattr(qr, "_default_client_factory", lambda a, b: _Client())
+    app.dependency_overrides[get_db] = lambda: pg_session
+    app.dependency_overrides[get_current_user] = lambda: admin
+    yield TestClient(app), pg_session
+    app.dependency_overrides.clear()
+    qr._SESSIONS.clear()
+
+
+def test_start_then_status_creates_account_once(client):
+    c, session = client
+    started = c.post("/api/modules/telegram/accounts/qr-login/start",
+                     json={"api_id": 1, "api_hash": "h", "label": "qr-acc"}).json()
+    assert started["status"] == "pending"
+    assert started["qr_svg"].startswith("data:image/svg+xml")
+    token = started["token"]
+
+    s = qr.get_qr_session(token)
+    asyncio.get_event_loop_policy().new_event_loop()  # no-op guard for sync test
+    # Let the background task finish in the app's loop by polling the endpoint.
+    for _ in range(50):
+        view = c.get(f"/api/modules/telegram/accounts/qr-login/{token}").json()
+        if view["status"] == "done":
+            break
+    assert view["status"] == "done"
+    assert view["account_id"] is not None
+
+    again = c.get(f"/api/modules/telegram/accounts/qr-login/{token}").json()
+    assert again["account_id"] == view["account_id"]
+    accounts = session.execute(select(ParserAccount).where(ParserAccount.label == "qr-acc")).scalars().all()
+    assert len(accounts) == 1
+    creds = accounts[0].credentials
+    assert creds["session_string"] == "SESSION-STRING"
+    assert creds["api_id"] == "1" and creds["api_hash"] == "h"
+    assert creds["username"] == "alice" and creds["phone"] == "380671234567"
+    assert creds["session_status"]["alive"] is True
+    assert "SESSION-STRING" not in c.get(f"/api/modules/telegram/accounts/qr-login/{token}").text
+
+
+def test_duplicate_label_rejected(client):
+    c, session = client
+    session.add(ParserAccount(parser_type="telegram", label="taken", credentials={}))
+    session.commit()
+    resp = c.post("/api/modules/telegram/accounts/qr-login/start", json={"api_id": 1, "api_hash": "h", "label": "taken"})
+    assert resp.status_code == 400
+
+
+def test_password_endpoint_rejects_when_not_needed(client):
+    c, _ = client
+    token = c.post("/api/modules/telegram/accounts/qr-login/start",
+                   json={"api_id": 1, "api_hash": "h", "label": "a2"}).json()["token"]
+    assert c.post(f"/api/modules/telegram/accounts/qr-login/{token}/password", json={"password": "x"}).status_code == 400
+
+
+def test_unknown_token_is_404(client):
+    c, _ = client
+    assert c.get("/api/modules/telegram/accounts/qr-login/nope").status_code == 404
+
+
+def test_cancel(client):
+    c, _ = client
+    token = c.post("/api/modules/telegram/accounts/qr-login/start",
+                   json={"api_id": 1, "api_hash": "h", "label": "a3"}).json()["token"]
+    assert c.post(f"/api/modules/telegram/accounts/qr-login/{token}/cancel").status_code == 200
+    assert c.get(f"/api/modules/telegram/accounts/qr-login/{token}").status_code == 404
+```
+
+Убрать строку с `new_event_loop()` — она лишняя; опрос эндпоинта уже даёт фоновой задаче выполниться, потому что `TestClient` гоняет приложение в своём цикле событий. Если задача не успевает завершиться за 50 опросов — добавить `time.sleep(0.02)` внутри цикла.
+
+- [ ] **Step 7: Add the endpoints**
+
+В `app/routers/api.py` — **до** любого `GET /modules/telegram/accounts/{account_id}/...` (иначе FastAPI попробует разобрать `qr-login` как `account_id: int` и вернёт 422, а не пойдёт дальше):
+
+```python
+class QrLoginStartRequest(BaseModel):
+    api_id: int
+    api_hash: str
+    label: str
+    hourly_limit: int = 120
+
+
+class QrLoginPasswordRequest(BaseModel):
+    password: str
+
+
+def _qr_session_for(token: str, user: User):
+    s = telegram_qr_login.get_qr_session(token)
+    if s is None:
+        raise HTTPException(status_code=404, detail="QR-сесію не знайдено або вона завершилась")
+    if not _is_admin(user) and s.owner_user_id != int(user.id):
+        raise HTTPException(status_code=403, detail="Немає доступу")
+    return s
+
+
+@router.post("/modules/telegram/accounts/qr-login/start")
+async def telegram_qr_login_start(payload: QrLoginStartRequest, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    label = payload.label.strip()
+    if not label or not payload.api_hash.strip():
+        raise HTTPException(status_code=400, detail="Поля api_id, api_hash і мітка обов'язкові")
+    if db.execute(select(ParserAccount).where(ParserAccount.label == label)).scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Акаунт з такою міткою вже існує")
+    try:
+        s = await telegram_qr_login.start_qr_login(
+            api_id=payload.api_id, api_hash=payload.api_hash.strip(), owner_user_id=int(user.id),
+            label=label, hourly_limit=max(int(payload.hourly_limit), 1),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Не вдалося почати QR-вхід: {exc}") from exc
+    return telegram_qr_login.public_view(s)
+
+
+@router.get("/modules/telegram/accounts/qr-login/{token}")
+async def telegram_qr_login_status(token: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    s = _qr_session_for(token, user)
+    if s.status == "done" and s.account_id is None:
+        account = ParserAccount(
+            parser_type=ParserType.telegram,
+            label=s.label,
+            owner_user_id=s.owner_user_id,
+            credentials={
+                "api_id": str(s.api_id),
+                "api_hash": s.api_hash,
+                "phone": s.me.get("phone"),
+                "username": s.me.get("username"),
+                "session_string": s.session_string,
+                "session_status": {
+                    "alive": True,
+                    "is_authorized": True,
+                    "phone": s.me.get("phone"),
+                    "checked_at": dt.datetime.now(dt.UTC).isoformat(),
+                },
+            },
+            hourly_limit=s.hourly_limit,
+            alive=True,
+            last_checked_at=dt.datetime.now(dt.UTC),
+            last_alive_at=dt.datetime.now(dt.UTC),
+        )
+        db.add(account)
+        db.commit()
+        db.refresh(account)
+        s.account_id = int(account.id)
+        s.session_string = None  # not needed in memory once persisted
+    return telegram_qr_login.public_view(s)
+
+
+@router.post("/modules/telegram/accounts/qr-login/{token}/password")
+async def telegram_qr_login_password(token: str, payload: QrLoginPasswordRequest, user=Depends(get_current_user)):
+    _qr_session_for(token, user)
+    if not telegram_qr_login.submit_password(token, payload.password):
+        raise HTTPException(status_code=400, detail="Пароль зараз не потрібен")
+    return {"ok": True}
+
+
+@router.post("/modules/telegram/accounts/qr-login/{token}/cancel")
+async def telegram_qr_login_cancel(token: str, user=Depends(get_current_user)):
+    _qr_session_for(token, user)
+    await telegram_qr_login.cancel_qr_login(token)
+    return {"ok": True}
+```
+
+Импорт: `from app.services import telegram_qr_login`. Эндпоинты **`async def`** — фоновая задача должна жить в цикле uvicorn; остальные обработчики файла синхронные, это осознанное исключение.
+
+- [ ] **Step 8: Run all tests**
+
+Run: `TEST_DATABASE_URL="postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/aggregator_test" pytest tests/test_telegram_qr_login.py tests/test_telegram_qr_api.py -v`
+Expected: PASS (12 passed). Затем полный прогон: 0 failed.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add app/services/telegram_qr_login.py app/routers/api.py app/config.py requirements.txt tests/test_telegram_qr_login.py tests/test_telegram_qr_api.py
+git commit -m "feat(telegram): вход аккаунта по QR-коду — сессии в процессе API, 2FA-пароль, segno"
 ```
 
 ---
