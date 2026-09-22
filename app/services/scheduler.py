@@ -77,7 +77,7 @@ def _enqueue_job_specs(session: Session, target: Target, job_specs) -> tuple[int
                 queue=queue_value,
                 max_attempts=max_attempts_value,
                 status=JobStatus.pending,
-                run_after=now,
+                run_after=getattr(spec, "run_after", None) or now,
             )
         )
         created += 1

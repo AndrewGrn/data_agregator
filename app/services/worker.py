@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import JobStatus, ParseJob, ParserAccount, Target
+from app.plugins.base import DeferJob
 from app.plugins.registry import plugin_registry
 from app.services.execution_queue import _connect, fetch_messages, pull_subscribe_queue
 from app.services.job_routing import (
@@ -382,6 +383,21 @@ def _process_job(session: Session, job: ParseJob) -> None:
             f"done job#{job.id} status=succeeded events={len(events)} "
             f"duration_sec={duration:.1f}"
         )
+    except DeferJob as defer:
+        session.rollback()
+        job = session.get(ParseJob, job_id)
+        if not job:
+            return
+        now = dt.datetime.now(dt.UTC)
+        job.status = JobStatus.retry
+        job.run_after = now + dt.timedelta(seconds=defer.seconds)
+        # The claim already counted this attempt; a deferral is not a failure.
+        job.attempt = max(int(job.attempt or 0) - 1, 0)
+        job.last_error = defer.reason[:2000]
+        job.locked_by = None
+        job.lock_expires_at = None
+        logger.info("defer job#%s for %ss: %s", job.id, defer.seconds, defer.reason)
+        return
     except Exception as exc:
         # Ensure session is usable after flush/DB errors.
         session.rollback()

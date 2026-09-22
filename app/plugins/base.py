@@ -18,6 +18,7 @@ class JobSpec:
     priority: int = 100
     queue: str | None = None
     max_attempts: int | None = None
+    run_after: dt.datetime | None = None
 
 
 @dataclass(slots=True)
@@ -43,6 +44,20 @@ class ParsedEvent:
     thread_id: str | None = None
     reply_to: str | None = None
     files: list[FileRef] = field(default_factory=list)
+
+
+class DeferJob(Exception):
+    """Ask the worker to re-run this job later without counting a failure.
+
+    Raised by a plugin when the work is not possible *right now* for a
+    reason that is not the job's fault: join pacing, a FloodWait on the
+    chosen account, no free account in the pool yet.
+    """
+
+    def __init__(self, seconds: int, reason: str) -> None:
+        super().__init__(reason)
+        self.seconds = max(int(seconds), 1)
+        self.reason = reason
 
 
 class ParserPlugin:
