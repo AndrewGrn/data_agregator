@@ -133,6 +133,14 @@ class ParserAccount(Base):
     success_count: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_success_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pool_mode: Mapped[str] = mapped_column(String(16), default="shared", index=True)
+    alive: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    last_checked_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_alive_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dead_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    join_window_start: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    join_window_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_join_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC))
 
     targets: Mapped[list[TargetAccountLink]] = relationship(back_populates="account")
@@ -149,6 +157,8 @@ class Target(Base):
     config: Mapped[dict] = mapped_column(JSON, default=dict)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     onboarding_status: Mapped[OnboardingStatus] = mapped_column(Enum(OnboardingStatus), default=OnboardingStatus.ready)
+    onboarding_step: Mapped[str] = mapped_column(String(32), default="idle", index=True)
+    onboarding_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC))
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC), onupdate=lambda: dt.datetime.now(dt.UTC)
@@ -400,3 +410,10 @@ Index("ix_jobs_status_priority_run_after", ParseJob.status, ParseJob.priority, P
 Index("uq_raw_events_parser_target_external", RawEvent.parser_type, RawEvent.target_id, RawEvent.external_id, unique=True)
 Index("ix_darknet_users_host_last_seen", DarknetUser.forum_host, DarknetUser.last_seen_at)
 Index("ix_darknet_memberships_target_last_seen", DarknetUserMembership.target_id, DarknetUserMembership.last_seen_at)
+Index(
+    "uq_tal_one_active",
+    TargetAccountLink.target_id,
+    unique=True,
+    postgresql_where=TargetAccountLink.is_active.is_(True),
+    sqlite_where=TargetAccountLink.is_active.is_(True),
+)
