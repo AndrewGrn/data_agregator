@@ -50,7 +50,7 @@ export function AccountPage() {
   const tone = account.alive === false ? "bad" : account.alive ? "ok" : "muted";
 
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-6 p-6">
+    <div className="flex flex-col gap-5">
       <Link to="/telegram/settings" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:underline">
         <ArrowLeft className="h-4 w-4" /> Акаунти
       </Link>

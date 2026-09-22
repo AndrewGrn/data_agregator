@@ -33,7 +33,7 @@ export function TargetsPage() {
   }, [busy, load]);
 
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-6 p-6">
+    <div className="flex flex-col gap-5">
       <header className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Telegram</h1>

@@ -189,7 +189,7 @@ export function SettingsPage() {
   // page is not ported — the active/problem jobs table already shows each job's error
   // inline. Add a dedicated journal view if debugging needs history beyond current jobs.
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-6 p-6">
+    <div className="flex flex-col gap-5">
       <Link to="/telegram" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:underline">
         <ArrowLeft className="h-4 w-4" /> Telegram
       </Link>

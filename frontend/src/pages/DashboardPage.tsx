@@ -1,9 +1,10 @@
 import { Link } from "react-router-dom";
 import { useCallback, useEffect, useState } from "react";
+import { ArrowRight } from "lucide-react";
 import { apiGet } from "../api";
-import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Card, CardContent } from "../components/ui/card";
+import { StatusPill } from "../components/ui/status-pill";
 
 type ModuleCard = {
   parser_type: string;
@@ -16,6 +17,23 @@ type ModuleCard = {
   raw_events: number;
   last_event_text: string;
 };
+
+const MODULE_PATH: Record<string, string> = {
+  telegram: "/telegram",
+  whatsapp: "/whatsapp",
+  darknet: "/darknet",
+};
+
+function Metric({ label, value, tone }: { label: string; value: number; tone?: "bad" }) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span className={`text-2xl font-semibold tabular-nums ${tone === "bad" ? "text-destructive" : ""}`}>
+        {value}
+      </span>
+    </div>
+  );
+}
 
 export function DashboardPage() {
   const [cards, setCards] = useState<ModuleCard[]>([]);
@@ -38,59 +56,71 @@ export function DashboardPage() {
     return () => clearInterval(timer);
   }, [load]);
 
-  return (
-    <>
-      <Card>
-        <CardHeader className="border-b">
-          <CardTitle className="text-xl">Панель модулів</CardTitle>
-          <CardDescription>Огляд стану парсерів і зібраних даних.</CardDescription>
-        </CardHeader>
-      </Card>
+  const totals = cards.reduce(
+    (acc, c) => ({
+      targets: acc.targets + c.targets,
+      accounts: acc.accounts + c.accounts,
+      active: acc.active + c.pending_jobs + c.running_jobs,
+      events: acc.events + c.raw_events,
+      failed: acc.failed + c.failed_jobs,
+    }),
+    { targets: 0, accounts: 0, active: 0, events: 0, failed: 0 },
+  );
 
-      <section className="grid gap-4 md:grid-cols-2">
-        {cards.map((card) => (
-          <Card key={card.parser_type} className="relative overflow-hidden">
-            <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-[#2554B1] to-[#2162C7]" />
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-lg">{card.title}</CardTitle>
-                <Badge variant={card.failed_jobs > 0 ? "destructive" : "secondary"}>
-                  {card.failed_jobs > 0 ? `Помилки: ${card.failed_jobs}` : "Стабільно"}
-                </Badge>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                <div className="rounded-md border bg-gradient-to-br from-blue-50 to-blue-100 p-3">
-                  <p className="text-xs text-muted-foreground">Цілі</p>
-                  <p className="text-xl font-semibold">{card.targets}</p>
-                </div>
-                <div className="rounded-md border bg-gradient-to-br from-indigo-50 to-indigo-100 p-3">
-                  <p className="text-xs text-muted-foreground">Акаунти</p>
-                  <p className="text-xl font-semibold">{card.accounts}</p>
-                </div>
-                <div className="rounded-md border bg-gradient-to-br from-sky-50 to-sky-100 p-3">
-                  <p className="text-xs text-muted-foreground">Активні задачі</p>
-                  <p className="text-xl font-semibold">{card.pending_jobs + card.running_jobs}</p>
-                </div>
-                <div className="rounded-md border bg-gradient-to-br from-cyan-50 to-cyan-100 p-3">
-                  <p className="text-xs text-muted-foreground">Події</p>
-                  <p className="text-xl font-semibold">{card.raw_events}</p>
-                </div>
-              </div>
-              <p className="text-sm text-muted-foreground">Остання подія: {card.last_event_text}</p>
-              <Button asChild type="button" variant="outline" size="sm">
-                <Link to={card.parser_type === "darknet" ? "/darknet" : "/telegram"}>Відкрити модуль</Link>
-              </Button>
-            </CardContent>
-          </Card>
+  return (
+    <div className="flex flex-col gap-5">
+      <section className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border bg-border sm:grid-cols-5">
+        {[
+          { label: "Об'єктів", value: totals.targets },
+          { label: "Акаунтів", value: totals.accounts },
+          { label: "Активних задач", value: totals.active },
+          { label: "Подій", value: totals.events },
+          { label: "Помилок", value: totals.failed, tone: totals.failed > 0 ? ("bad" as const) : undefined },
+        ].map((m) => (
+          <div key={m.label} className="bg-card px-4 py-3">
+            <Metric label={m.label} value={m.value} tone={m.tone} />
+          </div>
         ))}
+      </section>
+
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        {cards.map((card) => {
+          const active = card.pending_jobs + card.running_jobs;
+          return (
+            <Card key={card.parser_type} className="flex flex-col">
+              <CardContent className="flex flex-1 flex-col gap-4 p-4">
+                <div className="flex items-start justify-between gap-2">
+                  <h2 className="text-base font-semibold leading-tight">{card.title}</h2>
+                  <StatusPill tone={card.failed_jobs > 0 ? "bad" : "ok"}>
+                    {card.failed_jobs > 0 ? `Помилок: ${card.failed_jobs}` : "Стабільно"}
+                  </StatusPill>
+                </div>
+
+                <div className="grid grid-cols-4 gap-3">
+                  <Metric label="Об'єкти" value={card.targets} />
+                  <Metric label="Акаунти" value={card.accounts} />
+                  <Metric label="Задачі" value={active} />
+                  <Metric label="Події" value={card.raw_events} />
+                </div>
+
+                <div className="mt-auto flex items-center justify-between gap-2 border-t pt-3">
+                  <span className="truncate text-xs text-muted-foreground" title={card.last_event_text}>
+                    Остання подія: {card.last_event_text}
+                  </span>
+                  <Button asChild type="button" variant="ghost" size="sm" className="shrink-0">
+                    <Link to={MODULE_PATH[card.parser_type] ?? "/telegram"}>
+                      Відкрити <ArrowRight className="ml-1 h-3.5 w-3.5" />
+                    </Link>
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })}
         {!loading && cards.length === 0 ? (
-          <Card>
-            <CardContent className="pt-6 text-sm text-muted-foreground">Модулі не знайдені.</CardContent>
-          </Card>
+          <p className="text-sm text-muted-foreground">Модулі не знайдені.</p>
         ) : null}
       </section>
-    </>
+    </div>
   );
 }
