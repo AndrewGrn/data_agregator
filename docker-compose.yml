@@ -23,7 +23,7 @@ services:
     environment:
       VITE_API_BASE: http://aggredata.localhost
     ports:
-      - "5173:5173"
+      - "${FRONTEND_PORT:-5173}:5173"
     command: sh -c "npm run dev -- --host 0.0.0.0 --port 5173"
     labels:
       - "traefik.enable=true"
@@ -96,7 +96,7 @@ services:
       - torproxy
       - minio
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     volumes:
       - raw_data:/app/data/raw
     command: sh -c "python -m app.cli db-upgrade && uvicorn app.main:app --host 0.0.0.0 --port 8000"
