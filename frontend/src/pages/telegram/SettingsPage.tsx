@@ -22,6 +22,7 @@ function AccountsTab() {
   const [accounts, setAccounts] = useState<TelegramAccountRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [connectOpen, setConnectOpen] = useState(false);
+  const [reauthAccount, setReauthAccount] = useState<TelegramAccountRow | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
 
@@ -85,12 +86,21 @@ function AccountsTab() {
       ) : (
         <div className="max-w-4xl divide-y rounded-lg border bg-card">
           {accounts.map((row) => (
-            <AccountRow key={row.id} row={row} onChanged={load} />
+            <AccountRow key={row.id} row={row} onChanged={load} onReauth={setReauthAccount} />
           ))}
         </div>
       )}
 
       <ConnectAccountDialog open={connectOpen} onOpenChange={setConnectOpen} onConnected={load} />
+      {reauthAccount && (
+        <ConnectAccountDialog
+          mode="reauth"
+          account={reauthAccount}
+          open
+          onOpenChange={(next) => !next && setReauthAccount(null)}
+          onConnected={load}
+        />
+      )}
     </div>
   );
 }

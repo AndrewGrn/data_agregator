@@ -148,6 +148,60 @@ export function completeTelegramAccountAuth(payload: {
   return apiPost<{ ok: boolean; account_id: number; label: string }>(`${BASE}/accounts/complete-auth`, payload);
 }
 
+// Re-auth flow for a dead account (app/routers/api.py:_apply_telegram_reauth). Revives the
+// session in place; api_id/api_hash/phone fall back to the account's stored credentials when
+// omitted, and links/pool_mode/label are left untouched — failed-over channels stay unassigned.
+export interface TelegramQrSession {
+  token: string;
+  status: "pending" | "password_needed" | "done" | "expired" | "error";
+  url: string | null;
+  qr_svg: string | null;
+  error: string | null;
+  account_id: number | null;
+  expires_at: string | null;
+}
+
+export function startTelegramAccountReauth(
+  accountId: number,
+  payload: { api_id?: string; api_hash?: string; phone?: string } = {},
+) {
+  return apiPost<{ ok: boolean; auth_payload: TelegramAuthPayload }>(`${BASE}/accounts/${accountId}/reauth/start-auth`, payload);
+}
+
+export function completeTelegramAccountReauth(
+  accountId: number,
+  payload: {
+    api_id: string;
+    api_hash: string;
+    phone: string;
+    temp_session_string: string;
+    phone_code_hash: string;
+    code: string;
+    password: string;
+  },
+) {
+  return apiPost<{ ok: boolean; account_id: number; label: string }>(`${BASE}/accounts/${accountId}/reauth/complete-auth`, payload);
+}
+
+export function startTelegramAccountReauthQr(accountId: number, payload: { api_id?: string; api_hash?: string } = {}) {
+  return apiPost<TelegramQrSession>(`${BASE}/accounts/${accountId}/reauth/qr-login/start`, payload);
+}
+
+export function fetchTelegramAccountReauthQrStatus(accountId: number, token: string) {
+  return apiGet<TelegramQrSession>(`${BASE}/accounts/${accountId}/reauth/qr-login/${token}`);
+}
+
+// Shared, account-agnostic QR session endpoints (app/routers/api.py:2604,2612) — the reauth QR
+// session lives in the same in-process registry as a new-account QR login, so polling/password/
+// cancel go through these rather than account-scoped routes.
+export function submitTelegramQrLoginPassword(token: string, password: string) {
+  return apiPost<{ ok: boolean }>(`${BASE}/accounts/qr-login/${token}/password`, { password });
+}
+
+export function cancelTelegramQrLogin(token: string) {
+  return apiPost<{ ok: boolean }>(`${BASE}/accounts/qr-login/${token}/cancel`);
+}
+
 // Service actions (menu on the Settings/Accounts tab).
 export function syncTelegramMemberships() {
   return apiPost<unknown>("/api/telegram/sync-memberships");

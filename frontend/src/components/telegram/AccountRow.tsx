@@ -1,5 +1,5 @@
 import { useNavigate } from "react-router-dom";
-import { Activity, ExternalLink, Power, Trash2, Users } from "lucide-react";
+import { Activity, ExternalLink, KeyRound, Power, Trash2, Users } from "lucide-react";
 import { DataRow } from "../ui/data-row";
 import { IconButton } from "../ui/icon-button";
 import { StatusDot } from "../ui/status-dot";
@@ -19,10 +19,19 @@ function ago(iso: string | null) {
   return m < 1 ? "перевірено щойно" : `перевірено ${m} хв тому`;
 }
 
-export function AccountRow({ row, onChanged }: { row: TelegramAccountRow; onChanged: () => void }) {
+export function AccountRow({
+  row,
+  onChanged,
+  onReauth,
+}: {
+  row: TelegramAccountRow;
+  onChanged: () => void;
+  onReauth: (row: TelegramAccountRow) => void;
+}) {
   const navigate = useNavigate();
   const tone = row.alive === false ? "bad" : row.alive ? "ok" : "muted";
   const isShared = row.pool_mode === "shared";
+  const isDead = row.alive === false || !!row.dead_reason;
 
   return (
     <DataRow
@@ -54,6 +63,7 @@ export function AccountRow({ row, onChanged }: { row: TelegramAccountRow; onChan
       }
       actions={
         <>
+          {isDead && <IconButton label="Реавторизувати" icon={KeyRound} tone="danger" onClick={() => onReauth(row)} />}
           <IconButton
             label="Перевірити зараз"
             icon={Activity}
