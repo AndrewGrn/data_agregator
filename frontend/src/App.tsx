@@ -8,7 +8,9 @@ import { DarknetPage } from "./pages/DarknetPage";
 import { LoginPage } from "./pages/LoginPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { RegisterPage } from "./pages/RegisterPage";
-import { TelegramPage } from "./pages/TelegramPage";
+import { AccountPage as TelegramAccountPage } from "./pages/telegram/AccountPage";
+import { SettingsPage as TelegramSettingsPage } from "./pages/telegram/SettingsPage";
+import { TargetsPage as TelegramTargetsPage } from "./pages/telegram/TargetsPage";
 import { WhatsappPage } from "./pages/WhatsappPage";
 
 function Protected({ children }: { children: React.ReactNode }) {
@@ -58,7 +60,27 @@ export function App() {
         element={
           <Protected>
             <Shell>
-              <TelegramPage />
+              <TelegramTargetsPage />
+            </Shell>
+          </Protected>
+        }
+      />
+      <Route
+        path="/telegram/settings"
+        element={
+          <Protected>
+            <Shell>
+              <TelegramSettingsPage />
+            </Shell>
+          </Protected>
+        }
+      />
+      <Route
+        path="/telegram/accounts/:id"
+        element={
+          <Protected>
+            <Shell>
+              <TelegramAccountPage />
             </Shell>
           </Protected>
         }
