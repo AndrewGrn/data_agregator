@@ -36,5 +36,9 @@ def test_dashboard_ok_with_whatsapp_target(pg_session):
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    modules = {m["parser_type"] for m in response.json()["modules"]}
-    assert "whatsapp" in modules
+    modules = response.json()["modules"]
+    assert {m["parser_type"] for m in modules} >= {"whatsapp"}
+
+    whatsapp_module = next(m for m in modules if m["parser_type"] == "whatsapp")
+    assert "Darknet" not in whatsapp_module["title"]
+    assert "WhatsApp" in whatsapp_module["title"]

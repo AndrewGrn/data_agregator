@@ -1107,6 +1107,13 @@ def whatsapp_account_status(
     }
 
 
+_MODULE_TITLES = {
+    "telegram": "Telegram Модуль",
+    "darknet": "Darknet Модуль",
+    "whatsapp": "WhatsApp Модуль",
+}
+
+
 @router.get("/dashboard")
 def dashboard(db: Session = Depends(get_db), user=Depends(get_current_user)):
     modules: list[dict] = []
@@ -1219,7 +1226,7 @@ def dashboard(db: Session = Depends(get_db), user=Depends(get_current_user)):
         modules.append(
             {
                 "parser_type": parser_name,
-                "title": "Telegram Модуль" if parser_name == "telegram" else "Darknet Модуль",
+                "title": _MODULE_TITLES.get(parser_name, f"{parser_name.capitalize()} Модуль"),
                 "targets": int(targets),
                 "accounts": int(accounts),
                 "pending_jobs": int(pending_jobs),
