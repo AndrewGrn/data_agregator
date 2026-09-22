@@ -73,7 +73,7 @@ def default_onboard_config() -> dict[str, Any]:
     """Defaults for a channel the user only gave us a link for."""
     return {
         "limit": int(settings.telegram_fetch_limit),
-        "poll_interval_seconds": 300,
+        "poll_interval_seconds": 1800,  # listener is push; gap-fill only covers its downtime + comments
         "live_enabled": True,
         "gapfill_limit": int(settings.telegram_fetch_limit),
         "participants_sync_enabled": True,

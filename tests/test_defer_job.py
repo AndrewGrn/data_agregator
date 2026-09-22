@@ -68,3 +68,58 @@ def test_defer_job_reschedules_without_penalty(monkeypatch):
     assert account.fail_count == 0
     assert account.health_score == 90.0
     assert account.cooldown_until is None
+
+
+def _running_job(session):
+    target = Target(parser_type="telegram", name="c", identifier="@c")
+    account = ParserAccount(parser_type="telegram", label="a", credentials={}, health_score=90.0, fail_count=0)
+    session.add_all([target, account])
+    session.commit()
+    job = ParseJob(
+        parser_type="telegram", target_id=target.id, account_id=account.id,
+        job_key="backfill-full:1:1:0", payload={"backfill": True}, queue="telegram_backfill",
+        status=JobStatus.running, attempt=1, max_attempts=5,
+    )
+    session.add(job)
+    session.commit()
+    return job, account
+
+
+def _run_raising(session, job, exc, monkeypatch):
+    class _Plugin:
+        def run(self, session, job, target, account):
+            raise exc
+
+    monkeypatch.setattr(worker_mod.plugin_registry, "get", lambda name: _Plugin())
+    worker_mod._process_job(session, job)
+    session.commit()
+    return session.get(ParseJob, job.id), session.get(ParserAccount, job.account_id)
+
+
+def test_our_own_errors_fail_the_job_but_spare_the_account(monkeypatch):
+    """Regression: a fetch timeout and a jsonb insert error each cost the only
+    live account a 30-minute cooldown, so the UI showed 'accounts unavailable'
+    for a bug in our code."""
+    from sqlalchemy.exc import DataError
+
+    for exc in (TimeoutError("Telegram messages fetch timeout after 900s"),
+                DataError("INSERT", {}, Exception("\\u0000 cannot be converted to text"))):
+        session = _session()
+        job, account = _running_job(session)
+        job, account = _run_raising(session, job, exc, monkeypatch)
+        assert job.status == JobStatus.retry
+        assert account.fail_count == 0
+        assert account.health_score == 90.0
+        assert account.cooldown_until is None
+
+
+def test_telegram_rpc_errors_still_penalise_the_account(monkeypatch):
+    from telethon.errors import AuthKeyUnregisteredError
+
+    session = _session()
+    job, account = _running_job(session)
+    job, account = _run_raising(session, job, AuthKeyUnregisteredError(request=None), monkeypatch)
+    assert job.status == JobStatus.retry
+    assert account.fail_count == 1
+    assert account.health_score == 82.0
+    assert account.cooldown_until is not None

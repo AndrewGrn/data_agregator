@@ -10,7 +10,9 @@ import time
 import uuid
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+from telethon.errors import RPCError
 
 from app.config import get_settings
 from app.models import JobStatus, ParseJob, ParserAccount, Target
@@ -253,6 +255,16 @@ def _register_account_success(account: ParserAccount) -> None:
     account.last_success_at = now
 
 
+def _is_telegram_side_error(exc: BaseException) -> bool:
+    """Only Telegram's own verdicts (RPC errors, dropped connections) say
+    anything about the account. Our fetch budget expiring (TimeoutError) or a
+    row Postgres refused (SQLAlchemyError) are bugs in this codebase, and
+    penalising the account for them put a healthy session on a 30-minute
+    cooldown twice in the first live hour."""
+    return isinstance(exc, (RPCError, ConnectionError, OSError)) and not isinstance(exc, TimeoutError) \
+        and not isinstance(exc, SQLAlchemyError)
+
+
 def _register_account_failure(account: ParserAccount, error: str) -> None:
     now = dt.datetime.now(dt.UTC)
     _refresh_rate_window(account, now)
@@ -433,7 +445,7 @@ def _process_job(session: Session, job: ParseJob) -> None:
         if not job:
             logger.error(f"job#{job_id} disappeared after error: {exc}", exc_info=True)
             return
-        if account_id is not None and is_telegram_job:
+        if account_id is not None and is_telegram_job and _is_telegram_side_error(exc):
             account = session.get(ParserAccount, account_id)
             if account:
                 _register_account_failure(account, str(exc))
