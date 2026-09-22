@@ -83,9 +83,11 @@ function AccountsTab() {
       {loading ? null : accounts.length === 0 ? (
         <EmptyState icon={Users2} title="Ще немає підключених акаунтів" hint="Підключіть акаунт, щоб система могла вступати в канали." />
       ) : (
-        <div className="divide-y rounded-lg border bg-card">
+        <div className="grid max-w-3xl grid-cols-1 gap-3 sm:grid-cols-2">
           {accounts.map((row) => (
-            <AccountRow key={row.id} row={row} onChanged={load} />
+            <div key={row.id} className="rounded-lg border bg-card">
+              <AccountRow row={row} onChanged={load} />
+            </div>
           ))}
         </div>
       )}

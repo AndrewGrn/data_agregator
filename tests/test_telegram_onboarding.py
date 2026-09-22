@@ -10,7 +10,10 @@ from telethon.errors import (
     ChannelsTooMuchError,
     FloodWaitError,
     InviteHashExpiredError,
+    InviteRequestSentError,
+    PeerFloodError,
     UserAlreadyParticipantError,
+    UsernameInvalidError,
 )
 
 from app.db import Base
@@ -297,3 +300,130 @@ def test_run_pacing_defers_before_touching_telegram():
         onb.run_onboard_job(session, job, target, client_factory=lambda acc: client)
 
     assert client.calls == []
+
+
+# ---- integration: _process_job + session.commit() ------------------------
+# The unit tests above read the identity map, so a write that only explodes at
+# flush time (or that a rollback silently throws away) looks fine to them.
+
+
+def _process(session, job, client, monkeypatch):
+    """Run the job the way the worker does: through the plugin, then commit."""
+    from app.plugins import telegram as tg
+    from app.services import worker as worker_mod
+
+    monkeypatch.setattr(
+        tg, "run_onboard_job",
+        lambda s, j, t: onb.run_onboard_job(s, j, t, client_factory=lambda acc: client),
+    )
+    job.status = JobStatus.running
+    session.commit()
+    worker_mod._process_job(session, job)
+    worker_mod._commit_job(session, int(job.id))
+
+
+def test_relink_to_previously_used_account_commits(monkeypatch):
+    """uq_target_account(target_id, account_id) outlives is_active=False."""
+    session = _session()
+    target, job = _queued(session)
+    acc = session.execute(select(ParserAccount)).scalar_one()
+    session.add(TargetAccountLink(target_id=target.id, account_id=acc.id, is_active=False, auto_detected=True))
+    session.commit()
+
+    _process(session, job, _FakeClient(), monkeypatch)
+
+    links = session.execute(select(TargetAccountLink)).scalars().all()
+    assert len(links) == 1 and links[0].is_active is True
+    assert session.get(ParseJob, job.id).status == JobStatus.succeeded
+    assert session.get(Target, target.id).onboarding_step == "joined"
+
+
+def test_floodwait_cooldown_survives_the_defer_commit(monkeypatch):
+    session = _session()
+    target, job = _queued(session)
+
+    _process(session, job, _FakeClient(raise_on_join=FloodWaitError(request=None, capture=120)), monkeypatch)
+
+    acc = session.get(ParserAccount, session.execute(select(ParserAccount.id)).scalar_one())
+    assert acc.cooldown_until is not None, "the flooded account must stay cooled after the defer"
+    assert onb.pick_account(session, target, now=dt.datetime.now(dt.UTC)) is None
+    assert session.get(ParseJob, job.id).status == JobStatus.retry
+
+
+def test_channels_full_survives_the_defer_commit(monkeypatch):
+    session = _session()
+    target, job = _queued(session)
+
+    _process(session, job, _FakeClient(raise_on_join=ChannelsTooMuchError(request=None)), monkeypatch)
+
+    acc = session.get(ParserAccount, session.execute(select(ParserAccount.id)).scalar_one())
+    assert acc.credentials.get("channels_full") is True
+
+
+def test_terminal_failure_surfaces_on_the_target(monkeypatch):
+    """A job that exhausts its attempts must not leave the row reading 'queued'."""
+    session = _session()
+    target, job = _queued(session)
+    job.attempt = job.max_attempts
+    session.commit()
+
+    _process(session, job, _FakeClient(raise_on_join=RuntimeError("boom")), monkeypatch)
+
+    target = session.get(Target, target.id)
+    assert session.get(ParseJob, job.id).status == JobStatus.failed
+    assert target.onboarding_step == "failed"
+    assert "boom" in (target.onboarding_error or "")
+
+
+def test_peer_flood_cools_the_account():
+    session = _session()
+    target, job = _queued(session)
+    client = _FakeClient(raise_on_join=PeerFloodError(request=None))
+
+    with pytest.raises(DeferJob):
+        onb.run_onboard_job(session, job, target, client_factory=lambda acc: client)
+
+    acc = session.execute(select(ParserAccount)).scalar_one()
+    assert acc.cooldown_until is not None
+    assert onb.pick_account(session, target, now=dt.datetime.now(dt.UTC)) is None
+
+
+def test_invite_request_sent_is_not_retried():
+    session = _session()
+    target, job = _queued(session, identifier="t.me/+Wait")
+    client = _FakeClient(raise_on_join=InviteRequestSentError(request=None))
+
+    onb.run_onboard_job(session, job, target, client_factory=lambda acc: client)
+
+    assert target.onboarding_step == "pending_approval"
+    assert target.onboarding_status.value == "blocked"
+    assert target.onboarding_error
+
+
+def test_unresolvable_username_is_terminal():
+    session = _session()
+    target, job = _queued(session)
+    client = _FakeClient(raise_on_join=UsernameInvalidError(request=None))
+
+    onb.run_onboard_job(session, job, target, client_factory=lambda acc: client)
+
+    assert target.onboarding_step == "failed"
+    acc = session.execute(select(ParserAccount)).scalar_one()
+    assert acc.cooldown_until is None
+
+
+def test_unauthorized_session_is_not_a_terminal_target_error():
+    """RuntimeError, not ValueError: the account is broken, the target is fine."""
+    session = _session()
+    target, job = _queued(session)
+    client = _FakeClient()
+    client.is_user_authorized = lambda: _false()
+
+    with pytest.raises(RuntimeError):
+        onb.run_onboard_job(session, job, target, client_factory=lambda acc: client)
+
+    assert target.onboarding_step != "failed"
+
+
+async def _false():
+    return False

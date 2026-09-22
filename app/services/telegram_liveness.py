@@ -118,9 +118,13 @@ def check_accounts_liveness(
         failures = int(creds.get("liveness_failures", 0)) + 1
         creds["liveness_failures"] = failures
         account.credentials = creds
-        account.alive = False
-        account.dead_reason = str(info.get("error") or "unknown")[:2000]
-        logger.warning("liveness account=%s failed (%s/%s): %s", account.id, failures, threshold, account.dead_reason)
+        reason = str(info.get("error") or "unknown")[:2000]
+        logger.warning("liveness account=%s failed (%s/%s): %s", account.id, failures, threshold, reason)
+        # One blip must not black out the pool: alive=False takes every target
+        # of every account out of the picker until the next probe.
+        if failures >= threshold:
+            account.alive = False
+            account.dead_reason = reason
 
         if failures >= threshold and not was_dead:
             result["dead"] += 1

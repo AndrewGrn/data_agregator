@@ -1,10 +1,17 @@
 import { useNavigate } from "react-router-dom";
-import { Activity, ExternalLink, Users } from "lucide-react";
+import { Activity, ExternalLink, Power, Trash2, Users } from "lucide-react";
 import { DataRow } from "../ui/data-row";
 import { IconButton } from "../ui/icon-button";
 import { StatusDot } from "../ui/status-dot";
 import { StatusPill } from "../ui/status-pill";
-import { checkTelegramAccount, setTelegramAccountPoolMode, type TelegramAccountRow } from "../../api/telegram";
+import {
+  checkTelegramAccount,
+  deleteTelegramAccount,
+  disableTelegramAccount,
+  enableTelegramAccount,
+  setTelegramAccountPoolMode,
+  type TelegramAccountRow,
+} from "../../api/telegram";
 
 function ago(iso: string | null) {
   if (!iso) return "не перевірявся";
@@ -12,10 +19,6 @@ function ago(iso: string | null) {
   return m < 1 ? "перевірено щойно" : `перевірено ${m} хв тому`;
 }
 
-// Note: there is no backend endpoint to disable/delete a Telegram account (only
-// /modules/telegram/accounts/{id}/update-label exists besides check-alive/pool-mode).
-// "Open account" is the only account-level action wired here; disable/delete would
-// need a new backend endpoint first.
 export function AccountRow({ row, onChanged }: { row: TelegramAccountRow; onChanged: () => void }) {
   const navigate = useNavigate();
   const tone = row.alive === false ? "bad" : row.alive ? "ok" : "muted";
@@ -60,6 +63,33 @@ export function AccountRow({ row, onChanged }: { row: TelegramAccountRow; onChan
             }}
           />
           <IconButton label="Відкрити акаунт" icon={ExternalLink} onClick={() => navigate(`/telegram/accounts/${row.id}`)} />
+          <IconButton
+            label={row.is_active ? "Вимкнути акаунт" : "Увімкнути акаунт"}
+            icon={Power}
+            tone={row.is_active ? "danger" : "default"}
+            onClick={async () => {
+              if (row.is_active) {
+                await disableTelegramAccount(row.id);
+              } else {
+                await enableTelegramAccount(row.id);
+              }
+              onChanged();
+            }}
+          />
+          <IconButton
+            label="Видалити акаунт"
+            icon={Trash2}
+            tone="danger"
+            onClick={async () => {
+              if (!window.confirm(`Видалити акаунт «${row.label}»? Це неможливо скасувати.`)) return;
+              try {
+                await deleteTelegramAccount(row.id);
+                onChanged();
+              } catch (err) {
+                window.alert(err instanceof Error ? err.message : "Не вдалося видалити акаунт");
+              }
+            }}
+          />
         </>
       }
     />

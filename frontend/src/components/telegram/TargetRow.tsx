@@ -1,9 +1,10 @@
-import { Hash, Users, MessageCircle, Pause, Play, RefreshCw, Repeat, RotateCcw } from "lucide-react";
+import { Hash, Users, MessageCircle, Pause, Play, RefreshCw, Repeat, RotateCcw, Trash2 } from "lucide-react";
 import { DataRow } from "../ui/data-row";
 import { IconButton } from "../ui/icon-button";
 import { StatusDot } from "../ui/status-dot";
 import { StatusPill } from "../ui/status-pill";
 import {
+  deleteTelegramTarget,
   reassignTelegramTarget,
   retryTelegramOnboarding,
   runTelegramTargetNow,
@@ -35,6 +36,8 @@ export function statusOf(row: TelegramTargetRow): { tone: "ok" | "warn" | "bad" 
       return { tone: "info", text: "Вступає" };
     case "failed":
       return { tone: "bad", text: "Помилка", title: row.onboarding_error ?? undefined };
+    case "pending_approval":
+      return { tone: "warn", text: "Очікує схвалення", title: row.onboarding_error ?? undefined };
   }
   if (row.onboarding_status === "needs_account") return { tone: "warn", text: "Чекає акаунт" };
   if (row.onboarding_status === "blocked") return { tone: "warn", text: "Акаунти недоступні" };
@@ -96,6 +99,15 @@ export function TargetRow({ row, onChanged }: { row: TelegramTargetRow; onChange
             icon={Repeat}
             onClick={() => act(() => reassignTelegramTarget(row.id))}
             disabled={inProgress}
+          />
+          <IconButton
+            label="Видалити"
+            icon={Trash2}
+            tone="danger"
+            onClick={() => {
+              if (!window.confirm(`Видалити «${row.name}»? Зібрані повідомлення залишаться в базі.`)) return;
+              void act(() => deleteTelegramTarget(row.id));
+            }}
           />
         </>
       }

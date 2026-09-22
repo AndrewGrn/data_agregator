@@ -1,6 +1,6 @@
 import { apiGet, apiPost } from "../api";
 
-export type OnboardingStep = "idle" | "queued" | "resolving" | "joining" | "joined" | "failed";
+export type OnboardingStep = "idle" | "queued" | "resolving" | "joining" | "joined" | "pending_approval" | "failed";
 export type TargetKind = "channel" | "group" | "private" | null;
 
 export interface TelegramTargetRow {
@@ -73,6 +73,22 @@ export function setTelegramAccountPoolMode(id: number, pool_mode: "shared" | "de
 
 export function fetchTelegramAccountTargets(id: number) {
   return apiGet<TelegramTargetRow[]>(`${BASE}/accounts/${id}/targets`);
+}
+
+export function disableTelegramAccount(id: number) {
+  return apiPost<TelegramAccountRow>(`${BASE}/accounts/${id}/disable`);
+}
+
+export function enableTelegramAccount(id: number) {
+  return apiPost<TelegramAccountRow>(`${BASE}/accounts/${id}/enable`);
+}
+
+export function deleteTelegramAccount(id: number) {
+  return apiPost<{ ok: boolean }>(`${BASE}/accounts/${id}/delete`);
+}
+
+export function deleteTelegramTarget(id: number) {
+  return apiPost<TelegramTargetRow>(`${BASE}/targets/${id}/delete`);
 }
 
 export function reassignTelegramTarget(id: number, account_id?: number) {

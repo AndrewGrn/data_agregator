@@ -287,6 +287,34 @@ def _fail_job(session: Session, job: ParseJob, error: str) -> None:
     job.locked_by = None
     job.lock_expires_at = None
 
+    # A terminally failed onboarding otherwise leaves the target stuck showing
+    # "queued" forever: every non-terminal exception rolled its step back.
+    if job.status == JobStatus.failed and str(job.job_key or "").startswith("onboard:"):
+        target = session.get(Target, job.target_id)
+        if target is not None:
+            target.onboarding_step = "failed"
+            target.onboarding_error = error[:2000]
+
+
+def _commit_job(session: Session, job_id: int) -> None:
+    """Commit a processed job; a flush error here fails the job, not the worker.
+
+    The job body's own try/except is already over by this point, so an
+    IntegrityError raised at flush time would otherwise kill the worker thread
+    and leave the job `running` for the next thread to pick up and die on.
+    """
+    try:
+        session.commit()
+        return
+    except Exception as exc:
+        logger.exception("commit failed for job#%s: %s", job_id, exc)
+        error = str(exc)
+    session.rollback()
+    job = session.get(ParseJob, job_id)
+    if job:
+        _fail_job(session, job, f"commit failed: {error}")
+        session.commit()
+
 
 def _process_job(session: Session, job: ParseJob) -> None:
     job_id = int(job.id)
@@ -384,10 +412,10 @@ def _process_job(session: Session, job: ParseJob) -> None:
             f"duration_sec={duration:.1f}"
         )
     except DeferJob as defer:
-        session.rollback()
-        job = session.get(ParseJob, job_id)
-        if not job:
-            return
+        # No rollback: a defer is control flow, not a DB error. Whatever the
+        # plugin wrote before deferring (FloodWait cooldown, channels_full)
+        # is precisely the state that must survive, or the flooded account is
+        # handed straight to the next queued target.
         now = dt.datetime.now(dt.UTC)
         job.status = JobStatus.retry
         job.run_after = now + dt.timedelta(seconds=defer.seconds)
@@ -431,8 +459,9 @@ def worker_loop(session_factory, worker_name: str, allowed_queues: set[str] | No
             # Persist job lock + running status before long processing,
             # so UI and other workers observe the real state immediately.
             session.commit()
+            job_id = int(job.id)
             _process_job(session, job)
-            session.commit()
+            _commit_job(session, job_id)
 
 
 def run_workers(session_factory, concurrency: int, queues: set[str] | None = None) -> None:
@@ -535,7 +564,7 @@ def _process_delivery_sync(
             return
         session.commit()
         _process_job(session, job)
-        session.commit()
+        _commit_job(session, int(job_id))
 
 
 async def run_workers_nats(session_factory, concurrency: int, queues: set[str] | None = None) -> None:

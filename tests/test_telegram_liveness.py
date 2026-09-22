@@ -39,7 +39,8 @@ def _ok(creds):
     return {"alive": True, "is_authorized": True, "username": "a"}
 
 
-def test_single_failure_marks_but_does_not_failover():
+def test_single_failure_counts_but_keeps_account_usable():
+    """One failed probe must not black out the pool until the next check."""
     session = _session()
     acc, t1, t2 = _setup(session)
     now = dt.datetime.now(dt.UTC)
@@ -48,8 +49,10 @@ def test_single_failure_marks_but_does_not_failover():
     session.commit()
 
     assert result["dead"] == 0 and result["failed_over"] == 0
-    assert acc.alive is False
-    assert acc.dead_reason == "AuthKeyUnregistered"
+    assert acc.alive is not False
+    assert acc.credentials["liveness_failures"] == 1
+    from app.services.telegram_onboarding import pick_account
+    assert pick_account(session, t1, now=now) is not None
     links = session.execute(select(TargetAccountLink)).scalars().all()
     assert all(l.is_active for l in links)
 
@@ -99,7 +102,8 @@ def test_alive_resets_failure_counter():
     live.check_accounts_liveness(session, now=now, checker=_dead, force=True)
     session.commit()
 
-    assert acc.alive is False
+    assert acc.credentials["liveness_failures"] == 1, "recovery must reset the counter"
+    assert acc.alive is not False
     assert all(l.is_active for l in session.execute(select(TargetAccountLink)).scalars()), "1 failure after recovery is not death"
 
 

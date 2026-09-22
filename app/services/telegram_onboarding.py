@@ -15,7 +15,10 @@ from telethon.errors import (
     FloodWaitError,
     InviteHashExpiredError,
     InviteHashInvalidError,
+    InviteRequestSentError,
+    PeerFloodError,
     UserAlreadyParticipantError,
+    UsernameInvalidError,
     UsernameNotOccupiedError,
 )
 from telethon.sessions import StringSession
@@ -50,7 +53,14 @@ _TERMINAL_JOIN_ERRORS = (
     InviteHashInvalidError,
     ChannelPrivateError,
     UsernameNotOccupiedError,
+    UsernameInvalidError,
+    # Telethon's get_entity raises a bare ValueError for a username it cannot
+    # resolve; retrying that 20x never helps. Account-level problems must not
+    # raise ValueError inside the join block or they land here by mistake.
+    ValueError,
 )
+# PeerFlood carries no retry-after, so pick a window long enough to matter.
+_PEER_FLOOD_COOLDOWN_SECONDS = 24 * 3600
 
 
 @dataclass(slots=True)
@@ -94,6 +104,8 @@ def onboard(
     owner_user_id: int | None,
     account_id: int | None = None,
     allow_join: bool = True,
+    acting_user_id: int | None = None,
+    acting_is_admin: bool = False,
 ) -> Target:
     identifier = normalize_telegram_identifier(raw_input)
     if not identifier:
@@ -102,6 +114,15 @@ def onboard(
     target = session.execute(
         select(Target).where(Target.parser_type == "telegram", Target.identifier == identifier)
     ).scalar_one_or_none()
+    # Identifiers are global, so an existing row may belong to somebody else:
+    # without this check the caller would read and re-queue a foreign target.
+    if (
+        target is not None
+        and acting_user_id is not None
+        and not acting_is_admin
+        and (target.owner_user_id is None or int(target.owner_user_id) != int(acting_user_id))
+    ):
+        raise PermissionError("Ця ціль належить іншому користувачу")
     if target is None:
         target = Target(
             parser_type="telegram",
@@ -231,6 +252,19 @@ def join_pacing_wait_seconds(account: ParserAccount, now: dt.datetime) -> int:
     return max(wait, 0)
 
 
+def lock_account_for_pacing(session: Session, account: ParserAccount) -> None:
+    """Serialize the pacing check across workers by locking the account row.
+
+    Onboard jobs carry account_id=None, so the worker's per-account parallelism
+    cap never applies to them: without this two workers read the same
+    last_join_at snapshot and both join. The lock is held until the job's
+    commit, i.e. across the join call itself — which is exactly the window that
+    must not overlap. No-op on SQLite, which has no row locks anyway.
+    """
+    if session.get_bind().dialect.name in {"postgresql", "mysql"}:
+        session.refresh(account, with_for_update=True)
+
+
 def register_join(account: ParserAccount, now: dt.datetime) -> None:
     _refresh_join_window(account, now)
     account.join_window_count += 1
@@ -284,7 +318,8 @@ async def _with_client(client: Any, coro_factory):
     await client.connect()
     try:
         if not await client.is_user_authorized():
-            raise ValueError("account session is not authorized")
+            # Not a ValueError: that is the terminal "bad identifier" signal.
+            raise RuntimeError("account session is not authorized")
         return await coro_factory()
     finally:
         await client.disconnect()
@@ -307,6 +342,19 @@ def _link(session: Session, target: Target, account: ParserAccount) -> None:
     ).scalars():
         link.is_active = False
     session.flush()
+    # uq_target_account(target_id, account_id) survives deactivation, so a
+    # re-link to a previously used account must revive that row, not insert.
+    existing = session.execute(
+        select(TargetAccountLink).where(
+            TargetAccountLink.target_id == target.id,
+            TargetAccountLink.account_id == account.id,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        existing.is_active = True
+        existing.auto_detected = True
+        existing.owner_user_id = target.owner_user_id
+        return
     session.add(
         TargetAccountLink(
             target_id=target.id,
@@ -353,6 +401,7 @@ def run_onboard_job(
         return
 
     if needs_join:
+        lock_account_for_pacing(session, account)
         wait = join_pacing_wait_seconds(account, now)
         if wait > 0:
             raise DeferJob(seconds=wait, reason=f"join pacing on account #{account.id}")
@@ -371,10 +420,23 @@ def run_onboard_job(
         account.cooldown_until = now + dt.timedelta(seconds=seconds)
         logger.warning("onboard floodwait account=%s seconds=%s", account.id, seconds)
         raise DeferJob(seconds=min(seconds, 3600), reason=f"FloodWait {seconds}s on account #{account.id}")
+    except PeerFloodError:
+        # Telegram's hardest "you are spamming" signal; it carries no wait hint.
+        account.cooldown_until = now + dt.timedelta(seconds=_PEER_FLOOD_COOLDOWN_SECONDS)
+        logger.warning("onboard peerflood account=%s cooled for %ss", account.id, _PEER_FLOOD_COOLDOWN_SECONDS)
+        raise DeferJob(seconds=3600, reason=f"PeerFlood on account #{account.id}")
     except ChannelsTooMuchError:
         account.credentials = {**(account.credentials or {}), "channels_full": True}
         logger.warning("onboard account=%s is full (ChannelsTooMuch)", account.id)
         raise DeferJob(seconds=30, reason=f"account #{account.id} has too many channels")
+    except InviteRequestSentError:
+        # The join request went through; only a chat admin can move this on.
+        register_join(account, now)
+        target.onboarding_step = "pending_approval"
+        target.onboarding_error = "Заявку на вступ надіслано, очікує підтвердження адміністратора каналу"
+        target.onboarding_status = OnboardingStatus.blocked
+        logger.info("onboard join request pending target=%s account=%s", target.id, account.id)
+        return
     except UserAlreadyParticipantError:
         outcome = asyncio.run(_with_client(client, lambda: _resolve_only(client, target.identifier)))
     except _TERMINAL_JOIN_ERRORS as exc:

@@ -4,6 +4,7 @@ import re
 import secrets
 import shlex
 import uuid
+from typing import Any
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
@@ -28,6 +29,7 @@ from app.models import (
     DarknetAuthToken,
     EventFile,
     JobStatus,
+    OnboardingStatus,
     ParseJob,
     ParserAccount,
     ParserType,
@@ -389,7 +391,7 @@ async def _telegram_verify_code(
     phone_code_hash: str,
     code: str,
     password: str | None,
-) -> str:
+) -> tuple[str, dict[str, Any]]:
     client = TelegramClient(StringSession(temp_session_string), int(api_id), api_hash.strip())
     await client.connect()
     try:
@@ -405,8 +407,14 @@ async def _telegram_verify_code(
         raise HTTPException(status_code=400, detail="Авторизація Telegram не завершена")
 
     session_string = client.session.save()
+    me = await client.get_me()
+    identity = {
+        "username": (str(getattr(me, "username", "") or "").strip().lower() or None),
+        "phone": (str(getattr(me, "phone", "") or "").strip() or None),
+        "user_id": int(getattr(me, "id", 0) or 0) or None,
+    }
     await client.disconnect()
-    return session_string
+    return session_string, identity
 
 
 def _is_telegram_network_error(error: str | None) -> bool:
@@ -2288,7 +2296,11 @@ def telegram_onboard(payload: OnboardRequest, db: Session = Depends(get_db), use
             owner_user_id=int(user.id),
             account_id=payload.account_id,
             allow_join=payload.allow_join,
+            acting_user_id=int(user.id),
+            acting_is_admin=_is_admin(user),
         )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.commit()
@@ -2335,6 +2347,53 @@ def telegram_account_pool_mode(
     return _telegram_account_row(db, account)
 
 
+@router.post("/modules/telegram/accounts/{account_id}/disable")
+def telegram_account_disable(account_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    account = _ensure_account_access(db.get(ParserAccount, int(account_id)), user)
+    account.is_active = False
+    # Mirrors failover_account's target-side cleanup (app/services/telegram_liveness.py) but this is a
+    # deliberate manual action, not a liveness failure — no re-onboarding jobs are queued.
+    links = db.execute(
+        select(TargetAccountLink).where(TargetAccountLink.account_id == account.id, TargetAccountLink.is_active.is_(True))
+    ).scalars().all()
+    for link in links:
+        link.is_active = False
+        target = db.get(Target, link.target_id)
+        if target is not None:
+            target.onboarding_status = OnboardingStatus.needs_account
+    db.commit()
+    return _telegram_account_row(db, account)
+
+
+@router.post("/modules/telegram/accounts/{account_id}/enable")
+def telegram_account_enable(account_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    account = _ensure_account_access(db.get(ParserAccount, int(account_id)), user)
+    account.is_active = True
+    db.commit()
+    return _telegram_account_row(db, account)
+
+
+@router.post("/modules/telegram/accounts/{account_id}/delete")
+def telegram_account_delete(account_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    account = _ensure_account_access(db.get(ParserAccount, int(account_id)), user)
+    active_links = int(
+        db.scalar(
+            select(func.count()).select_from(TargetAccountLink).where(
+                TargetAccountLink.account_id == account.id, TargetAccountLink.is_active.is_(True)
+            )
+        )
+        or 0
+    )
+    if active_links:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Акаунт має {active_links} активних привʼязок до каналів — спершу відключіть їх",
+        )
+    db.delete(account)
+    db.commit()
+    return {"ok": True}
+
+
 @router.get("/modules/telegram/accounts/{account_id}/targets")
 def telegram_account_targets(account_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
     account = _ensure_account_access(db.get(ParserAccount, int(account_id)), user)
@@ -2374,6 +2433,21 @@ def telegram_target_reassign(
 def telegram_target_retry_onboarding(target_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
     target = _ensure_target_access(db.get(Target, int(target_id)), user)
     telegram_onboarding.onboard(db, raw_input=target.identifier, owner_user_id=target.owner_user_id, allow_join=True)
+    db.commit()
+    return _telegram_target_row(db, target)
+
+
+@router.post("/modules/telegram/targets/{target_id}/delete")
+def telegram_target_delete(target_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    # Soft delete: raw_events.target_id and parse_jobs.target_id both CASCADE on Target's FK
+    # (app/models.py), so a hard delete would silently wipe every collected event/job for this
+    # target. Deactivate instead — same shape as account disable — so history stays queryable.
+    target = _ensure_target_access(db.get(Target, int(target_id)), user)
+    target.is_active = False
+    for link in db.execute(
+        select(TargetAccountLink).where(TargetAccountLink.target_id == target.id, TargetAccountLink.is_active.is_(True))
+    ).scalars():
+        link.is_active = False
     db.commit()
     return _telegram_target_row(db, target)
 
@@ -3117,7 +3191,7 @@ def telegram_complete_account_auth(payload: dict, db: Session = Depends(get_db),
         raise HTTPException(status_code=400, detail="Акаунт з такою міткою вже існує")
 
     try:
-        session_string = asyncio.run(
+        session_string, identity = asyncio.run(
             _telegram_verify_code(
                 api_id=api_id,
                 api_hash=api_hash,
@@ -3140,7 +3214,9 @@ def telegram_complete_account_auth(payload: dict, db: Session = Depends(get_db),
         credentials={
             "api_id": api_id,
             "api_hash": api_hash,
-            "phone": phone,
+            "phone": identity.get("phone") or phone,
+            "username": identity.get("username"),
+            "user_id": identity.get("user_id"),
             "session_string": session_string,
             "session_status": {
                 "alive": True,
@@ -3155,6 +3231,208 @@ def telegram_complete_account_auth(payload: dict, db: Session = Depends(get_db),
     db.commit()
     db.refresh(account)
     return {"ok": True, "account_id": int(account.id), "label": account.label}
+
+
+def _telegram_identity_mismatch(
+    stored: dict[str, Any], *, username: str | None, phone: str | None, user_id: int | None
+) -> str | None:
+    """None = compatible (or nothing to compare). Otherwise a human-readable refusal reason."""
+
+    def norm_phone(value: Any) -> str:
+        return re.sub(r"\D", "", str(value or ""))
+
+    stored_user_id = stored.get("user_id")
+    if stored_user_id and user_id and int(stored_user_id) != int(user_id):
+        return "Цей вхід належить іншому Telegram-акаунту (інший user_id) — реавторизація відхилена"
+
+    stored_username = str(stored.get("username") or "").strip().lower()
+    if stored_username and username and stored_username != str(username).strip().lower():
+        return f"Цей вхід — від @{username}, а акаунт зареєстровано на @{stored_username} — реавторизація відхилена"
+
+    stored_phone = norm_phone(stored.get("phone"))
+    new_phone = norm_phone(phone)
+    if stored_phone and new_phone and stored_phone != new_phone:
+        return "Номер телефону нового входу не збігається з номером акаунта — реавторизація відхилена"
+
+    return None
+
+
+def _apply_telegram_reauth(
+    db: Session,
+    account: ParserAccount,
+    *,
+    api_id: str,
+    api_hash: str,
+    session_string: str,
+    identity: dict[str, Any],
+) -> None:
+    """Revive a dead account's session in place. Label, pool_mode, hourly_limit and
+    TargetAccountLink rows are never touched here — a recovered account does not
+    reclaim its channels automatically (see telegram_liveness.failover_account)."""
+    creds = dict(account.credentials or {})
+    mismatch = _telegram_identity_mismatch(
+        creds, username=identity.get("username"), phone=identity.get("phone"), user_id=identity.get("user_id")
+    )
+    if mismatch:
+        raise HTTPException(status_code=400, detail=mismatch)
+
+    now = dt.datetime.now(dt.UTC)
+    creds["api_id"] = api_id
+    creds["api_hash"] = api_hash
+    creds["session_string"] = session_string
+    if identity.get("username"):
+        creds["username"] = identity["username"]
+    if identity.get("phone"):
+        creds["phone"] = identity["phone"]
+    if identity.get("user_id"):
+        creds["user_id"] = identity["user_id"]
+    creds["session_status"] = {
+        "alive": True,
+        "is_authorized": True,
+        "phone": identity.get("phone") or creds.get("phone"),
+        "checked_at": now.isoformat(),
+    }
+    creds["liveness_failures"] = 0
+    account.credentials = creds
+    account.alive = True
+    account.last_alive_at = now
+    account.last_checked_at = now
+    account.dead_reason = None
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+
+
+@router.post("/modules/telegram/accounts/{account_id}/reauth/start-auth")
+def telegram_reauth_start_account_auth(
+    account_id: int, payload: dict | None = None, db: Session = Depends(get_db), user=Depends(get_current_user)
+):
+    account = _ensure_account_access(db.get(ParserAccount, int(account_id)), user)
+    if account.parser_type != ParserType.telegram:
+        raise HTTPException(status_code=404, detail="Telegram акаунт не знайдено")
+
+    body = payload if isinstance(payload, dict) else {}
+    creds = dict(account.credentials or {})
+    api_id = str(body.get("api_id") or creds.get("api_id") or "").strip()
+    api_hash = str(body.get("api_hash") or creds.get("api_hash") or "").strip()
+    phone = str(body.get("phone") or creds.get("phone") or "").strip()
+    if not api_id or not api_hash or not phone:
+        raise HTTPException(status_code=400, detail="Немає api_id/api_hash/phone для цього акаунта — вкажіть їх вручну")
+
+    try:
+        int(api_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="api_id має бути числом") from exc
+
+    try:
+        temp_session_string, phone_code_hash = asyncio.run(_telegram_send_code(api_id=api_id, api_hash=api_hash, phone=phone))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Не вдалося надіслати код: {exc}") from exc
+
+    if not phone_code_hash:
+        raise HTTPException(status_code=400, detail="Не вдалося отримати phone_code_hash")
+
+    return {
+        "ok": True,
+        "auth_payload": {
+            "api_id": api_id,
+            "api_hash": api_hash,
+            "phone": phone,
+            "temp_session_string": temp_session_string,
+            "phone_code_hash": phone_code_hash,
+        },
+    }
+
+
+@router.post("/modules/telegram/accounts/{account_id}/reauth/complete-auth")
+def telegram_reauth_complete_account_auth(
+    account_id: int, payload: dict, db: Session = Depends(get_db), user=Depends(get_current_user)
+):
+    account = _ensure_account_access(db.get(ParserAccount, int(account_id)), user)
+    if account.parser_type != ParserType.telegram:
+        raise HTTPException(status_code=404, detail="Telegram акаунт не знайдено")
+
+    api_id = str(payload.get("api_id") or "").strip()
+    api_hash = str(payload.get("api_hash") or "").strip()
+    phone = str(payload.get("phone") or "").strip()
+    temp_session_string = str(payload.get("temp_session_string") or "").strip()
+    phone_code_hash = str(payload.get("phone_code_hash") or "").strip()
+    code = str(payload.get("code") or "").strip()
+    password = str(payload.get("password") or "").strip()
+
+    if not api_id or not api_hash or not phone:
+        raise HTTPException(status_code=400, detail="Немає даних авторизації. Почніть авторизацію заново.")
+    if not temp_session_string or not phone_code_hash:
+        raise HTTPException(status_code=400, detail="Немає тимчасової Telegram-сесії. Почніть авторизацію заново.")
+    if not code:
+        raise HTTPException(status_code=400, detail="Код підтвердження обов'язковий")
+
+    try:
+        session_string, identity = asyncio.run(
+            _telegram_verify_code(
+                api_id=api_id,
+                api_hash=api_hash,
+                phone=phone,
+                temp_session_string=temp_session_string,
+                phone_code_hash=phone_code_hash,
+                code=code,
+                password=password or None,
+            )
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Не вдалося підтвердити код: {exc}") from exc
+
+    _apply_telegram_reauth(db, account, api_id=api_id, api_hash=api_hash, session_string=session_string, identity=identity)
+    return {"ok": True, "account_id": int(account.id), "label": account.label}
+
+
+@router.post("/modules/telegram/accounts/{account_id}/reauth/qr-login/start")
+async def telegram_reauth_qr_login_start(
+    account_id: int, payload: dict | None = None, db: Session = Depends(get_db), user=Depends(get_current_user)
+):
+    account = _ensure_account_access(db.get(ParserAccount, int(account_id)), user)
+    if account.parser_type != ParserType.telegram:
+        raise HTTPException(status_code=404, detail="Telegram акаунт не знайдено")
+
+    body = payload if isinstance(payload, dict) else {}
+    creds = dict(account.credentials or {})
+    api_id_raw = body.get("api_id") or creds.get("api_id")
+    api_hash = str(body.get("api_hash") or creds.get("api_hash") or "").strip()
+    if not api_id_raw or not api_hash:
+        raise HTTPException(status_code=400, detail="Немає api_id/api_hash для цього акаунта — вкажіть їх вручну")
+
+    try:
+        api_id = int(api_id_raw)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="api_id має бути числом") from exc
+
+    try:
+        s = await telegram_qr_login.start_qr_login(
+            api_id=api_id, api_hash=api_hash, owner_user_id=int(user.id),
+            label=account.label, hourly_limit=int(account.hourly_limit),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Не вдалося почати QR-вхід: {exc}") from exc
+    return telegram_qr_login.public_view(s)
+
+
+@router.get("/modules/telegram/accounts/{account_id}/reauth/qr-login/{token}")
+async def telegram_reauth_qr_login_status(
+    account_id: int, token: str, db: Session = Depends(get_db), user=Depends(get_current_user)
+):
+    account = _ensure_account_access(db.get(ParserAccount, int(account_id)), user)
+    s = _qr_session_for(token, user)
+    if s.status == "done" and s.account_id is None:
+        _apply_telegram_reauth(
+            db, account, api_id=str(s.api_id), api_hash=s.api_hash, session_string=s.session_string, identity=s.me
+        )
+        s.account_id = int(account.id)
+        s.session_string = None  # not needed in memory once persisted
+    return telegram_qr_login.public_view(s)
 
 
 @router.get("/modules/telegram/accounts/{account_id}/dialogs")
@@ -3245,8 +3523,16 @@ def telegram_account_add_target_from_dialog(
     # Account already sits in this dialog, so onboarding must not try to join it again.
     try:
         target = telegram_onboarding.onboard(
-            db, raw_input=identifier_raw, owner_user_id=int(user.id), account_id=int(account.id), allow_join=False
+            db,
+            raw_input=identifier_raw,
+            owner_user_id=int(user.id),
+            account_id=int(account.id),
+            allow_join=False,
+            acting_user_id=int(user.id),
+            acting_is_admin=_is_admin(user),
         )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.commit()
@@ -3260,8 +3546,17 @@ def telegram_smart_add_targets(payload: dict, db: Session = Depends(get_db), use
     created = []
     for entry in entries:
         try:
-            target = telegram_onboarding.onboard(db, raw_input=entry, owner_user_id=int(user.id), allow_join=True)
+            target = telegram_onboarding.onboard(
+                db,
+                raw_input=entry,
+                owner_user_id=int(user.id),
+                allow_join=True,
+                acting_user_id=int(user.id),
+                acting_is_admin=_is_admin(user),
+            )
             created.append(target.id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         except ValueError:
             continue
     db.commit()
