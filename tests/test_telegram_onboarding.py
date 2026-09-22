@@ -500,6 +500,10 @@ def test_private_link_nobody_is_in_fails_with_a_human_message():
     assert target.identifier == "-1002707984934"
 
     class _Outsider(_FakeClient):
+        async def iter_dialogs(self):
+            return
+            yield  # noqa: unreachable - makes this an async generator with no dialogs
+
         async def get_entity(self, ident):
             raise ValueError(f'Cannot find any entity corresponding to "{ident}"')
 
@@ -511,3 +515,36 @@ def test_private_link_nobody_is_in_fails_with_a_human_message():
     assert target.onboarding_status.value == "needs_account"
     assert target.onboarding_error.startswith("Приватний чат")
     assert "Cannot find any entity" not in target.onboarding_error
+
+
+def test_private_id_resolves_after_walking_dialogs_for_a_member_account():
+    """A dedicated account that IS inside the private chat must succeed even
+    when its session has not met the chat yet (Telethon raises ValueError on a
+    bare id until the dialogs were listed once)."""
+    session = _session()
+    target, job = _queued(session, identifier="https://t.me/c/2707984934/1393921")
+
+    class _Member(_FakeClient):
+        def __init__(self):
+            super().__init__(entity=_FakeEntity(id=2707984934, username=None, megagroup=True, broadcast=False, title="Private"))
+            self.dialogs_walked = False
+
+        async def iter_dialogs(self):
+            self.dialogs_walked = True
+            yield object()
+
+        async def get_entity(self, ident):
+            self.calls.append(f"get_entity:{ident}")
+            if not self.dialogs_walked:
+                raise ValueError("Could not find the input entity")
+            return self.entity
+
+    client = _Member()
+    onb.run_onboard_job(session, job, target, client_factory=lambda acc: client)
+    session.commit()
+
+    assert client.dialogs_walked
+    assert client.calls.count("get_entity:-1002707984934") == 2
+    assert target.onboarding_step == "joined"
+    assert target.identifier == "-1002707984934"
+    assert target.name == "Private"

@@ -328,6 +328,26 @@ def _canonical(entity: Any) -> str:
     return f"-100{int(entity.id)}"
 
 
+async def _get_entity(client: Any, identifier: str) -> Any:
+    """Resolve @username or -100<id>.
+
+    Telethon can only turn a bare channel id into an entity once it has "met"
+    the chat in this session; a member account with a fresh session still gets
+    ValueError. Walking the dialogs once fills that cache, so a dedicated
+    account that really is inside a private chat resolves it on the retry.
+    """
+    if identifier.startswith("@"):
+        return await client.get_entity(identifier[1:])
+    if identifier.lstrip("-").isdigit():
+        try:
+            return await client.get_entity(int(identifier))
+        except ValueError:
+            async for _ in client.iter_dialogs():
+                pass
+            return await client.get_entity(int(identifier))
+    return await client.get_entity(identifier)
+
+
 async def join_channel(client: Any, identifier: str) -> JoinOutcome:
     """Join by @username/id or by invite hash. Raises Telethon errors as-is."""
     if is_invite_identifier(identifier):
@@ -335,13 +355,13 @@ async def join_channel(client: Any, identifier: str) -> JoinOutcome:
         chat = updates.chats[0]
         return JoinOutcome(identifier=_canonical(chat), kind=_kind_of(chat), title=getattr(chat, "title", None), joined=True)
 
-    entity = await client.get_entity(identifier.lstrip("@") if identifier.startswith("@") else identifier)
+    entity = await _get_entity(client, identifier)
     await client(JoinChannelRequest(entity))
     return JoinOutcome(identifier=_canonical(entity), kind=_kind_of(entity), title=getattr(entity, "title", None), joined=True)
 
 
 async def _resolve_only(client: Any, identifier: str) -> JoinOutcome:
-    entity = await client.get_entity(identifier.lstrip("@") if identifier.startswith("@") else identifier)
+    entity = await _get_entity(client, identifier)
     return JoinOutcome(identifier=_canonical(entity), kind=_kind_of(entity), title=getattr(entity, "title", None), joined=False)
 
 
