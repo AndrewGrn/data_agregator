@@ -34,9 +34,14 @@ def _enqueue_job_specs(session: Session, target: Target, job_specs) -> tuple[int
                 skipped_existing += 1
                 continue
 
-        if spec.job_key and (spec.job_key.startswith("backfill:") or spec.job_key.startswith("backfill-full:")):
+        if spec.job_key and spec.job_key.startswith("backfill:"):
+            # Date-range backfills run once per range, ever.
             existing = session.execute(select(ParseJob).where(ParseJob.job_key == spec.job_key)).scalar_one_or_none()
         elif spec.job_key:
+            # backfill-full:<target>:<account>:<offset> is guarded by the target's
+            # full_progress state, not by job history: once that state is reset
+            # (history wiped, re-collect requested) a long-succeeded job with the
+            # same key must not block the restart forever.
             existing = session.execute(
                 select(ParseJob).where(
                     ParseJob.job_key == spec.job_key,

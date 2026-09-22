@@ -471,7 +471,12 @@ def test_media_is_off_by_default_and_toggles_per_target(client):
     assert row["media_enabled"] is False
 
     target = session.get(Target, row["id"])
-    target.config = {**target.config, "kind": "channel", "quiet_until": "2026-01-01T00:00:00+00:00"}
+    target.config = {
+        **target.config,
+        "kind": "channel",
+        "quiet_until": "2026-01-01T00:00:00+00:00",
+        "backfill": {**target.config["backfill"], "full_progress": {"1": {"next_offset_id": 219, "done": False}}},
+    }
     session.commit()
 
     assert c.post(f"/api/modules/telegram/targets/{row['id']}/update", json={"media_enabled": True}).status_code == 200
@@ -479,6 +484,8 @@ def test_media_is_off_by_default_and_toggles_per_target(client):
     assert target.config["media_enabled"] is True
     assert target.config["kind"] == "channel", "update must not wipe onboarding-written keys"
     assert target.config["quiet_until"] == "2026-01-01T00:00:00+00:00"
+    assert target.config["backfill"]["full_progress"]["1"]["next_offset_id"] == 219, "a settings edit must not restart the backfill"
+    assert target.config["backfill"]["enabled"] is True
 
     rows = c.get("/api/modules/telegram").json()["targets"]
     assert next(r for r in rows if r["id"] == row["id"])["media_enabled"] is True

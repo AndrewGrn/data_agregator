@@ -2688,11 +2688,14 @@ def update_telegram_target(target_id: int, payload: dict, db: Session = Depends(
         risk_label=str(payload.get("risk_label", current_cfg.get("risk_label", ""))).strip(),
         media_enabled=bool(payload.get("media_enabled", current_cfg.get("media_enabled", False))),
     )
-    # _telegram_target_config() rebuilds the dict from its arguments only;
-    # keys the onboarding flow wrote (kind, quiet_until, invite_hash) must survive.
-    for key in ("kind", "quiet_until", "invite_hash", "participants_unavailable"):
-        if key in current_cfg and key not in target.config:
-            target.config[key] = current_cfg[key]
+    # _telegram_target_config() rebuilds the dict from its arguments only. State
+    # written elsewhere (kind, quiet_until, invite_hash, backfill.full_progress)
+    # must survive a settings edit, or every toggle restarts the full backfill.
+    target.config = {
+        **current_cfg,
+        **target.config,
+        "backfill": {**current_backfill, **dict(target.config.get("backfill") or {})},
+    }
     db.commit()
     return {"ok": True, "target_id": int(target.id)}
 
