@@ -17,6 +17,9 @@ _PLACEHOLDER_S3_SECRET_KEY = "miniosecret"
 
 class Settings(BaseSettings):
     app_name: str = "Data Aggregator"
+    # Origins allowed to call the API from a browser. The frontend port is
+    # configurable (FRONTEND_PORT), so this must be able to follow it.
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://aggredata.localhost"
     environment: str = "development"
     log_level: str = "INFO"
     secret_key: str = "change-me"
