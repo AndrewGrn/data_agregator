@@ -100,6 +100,11 @@ def schedule_target_once(session: Session, target: Target) -> dict:
 
 
 def schedule_once(session: Session, owner_user_id: int | None = None) -> dict:
+    # local import: telegram_liveness imports this module
+    from app.services.telegram_liveness import check_accounts_liveness
+
+    check_accounts_liveness(session, now=dt.datetime.now(dt.UTC))
+
     stmt = select(Target).where(Target.is_active.is_(True))
     if owner_user_id is not None:
         stmt = stmt.where(Target.owner_user_id == int(owner_user_id))
