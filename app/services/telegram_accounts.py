@@ -9,15 +9,28 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 
+_INVITE_RE = re.compile(
+    r"(?:https?://)?(?:t\.me|telegram\.me)/(?:\+|joinchat/)([A-Za-z0-9_-]+)",
+    re.IGNORECASE,
+)
+_USERNAME_LINK_RE = re.compile(
+    r"(?:https?://)?(?:t\.me|telegram\.me)/([a-zA-Z0-9_]+)",
+    re.IGNORECASE,
+)
+
+
 def normalize_telegram_identifier(value: str) -> str:
     raw = (value or "").strip()
     if not raw:
         return ""
 
-    lower = raw.lower()
-    match = re.search(r"(?:https?://)?(?:t\.me|telegram\.me)/([a-zA-Z0-9_]+)", lower)
-    if match:
-        return f"@{match.group(1)}"
+    invite = _INVITE_RE.search(raw)
+    if invite:
+        return f"invite:{invite.group(1)}"
+
+    link = _USERNAME_LINK_RE.search(raw)
+    if link:
+        return f"@{link.group(1).lower()}"
 
     if raw.startswith("@"):
         return f"@{raw[1:].strip().lower()}"
@@ -26,6 +39,16 @@ def normalize_telegram_identifier(value: str) -> str:
         return raw
 
     return raw
+
+
+def is_invite_identifier(identifier: str) -> bool:
+    return str(identifier or "").startswith("invite:")
+
+
+def invite_hash(identifier: str) -> str | None:
+    if not is_invite_identifier(identifier):
+        return None
+    return str(identifier).split(":", 1)[1] or None
 
 
 def parse_bulk_targets_input(value: str) -> list[str]:
