@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     telegram_fetch_limit: int = 200
     telegram_fetch_timeout_seconds: int = 180
     telegram_listener_refresh_seconds: int = 30
+    telegram_qr_login_ttl_seconds: int = 180
+    telegram_join_min_gap_seconds: int = 900
+    telegram_join_daily_limit: int = 10
+    telegram_liveness_interval_seconds: int = 600
+    telegram_liveness_failures_to_dead: int = 2
     darknet_http_timeout_seconds: int = 90
     nats_enabled: bool = True
     nats_servers: str = "nats://nats:4222"

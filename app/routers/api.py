@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from sqlalchemy import desc, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -76,6 +77,7 @@ from app.services.telegram_accounts import (
     refresh_account_dialogs_sync,
     refresh_account_session_info_sync,
 )
+from app.services import telegram_qr_login
 
 router = APIRouter(prefix="/api", tags=["api"])
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
@@ -2310,6 +2312,92 @@ def enable_comments_defaults_for_telegram_targets(db: Session = Depends(get_db),
         updated += 1
     db.commit()
     return {"ok": True, "updated": int(updated)}
+
+
+class QrLoginStartRequest(BaseModel):
+    api_id: int
+    api_hash: str
+    label: str
+    hourly_limit: int = 120
+
+
+class QrLoginPasswordRequest(BaseModel):
+    password: str
+
+
+def _qr_session_for(token: str, user: User):
+    s = telegram_qr_login.get_qr_session(token)
+    if s is None:
+        raise HTTPException(status_code=404, detail="QR-сесію не знайдено або вона завершилась")
+    if not _is_admin(user) and s.owner_user_id != int(user.id):
+        raise HTTPException(status_code=403, detail="Немає доступу")
+    return s
+
+
+@router.post("/modules/telegram/accounts/qr-login/start")
+async def telegram_qr_login_start(payload: QrLoginStartRequest, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    label = payload.label.strip()
+    if not label or not payload.api_hash.strip():
+        raise HTTPException(status_code=400, detail="Поля api_id, api_hash і мітка обов'язкові")
+    if db.execute(select(ParserAccount).where(ParserAccount.label == label)).scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Акаунт з такою міткою вже існує")
+    try:
+        s = await telegram_qr_login.start_qr_login(
+            api_id=payload.api_id, api_hash=payload.api_hash.strip(), owner_user_id=int(user.id),
+            label=label, hourly_limit=max(int(payload.hourly_limit), 1),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Не вдалося почати QR-вхід: {exc}") from exc
+    return telegram_qr_login.public_view(s)
+
+
+@router.get("/modules/telegram/accounts/qr-login/{token}")
+async def telegram_qr_login_status(token: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    s = _qr_session_for(token, user)
+    if s.status == "done" and s.account_id is None:
+        account = ParserAccount(
+            parser_type=ParserType.telegram,
+            label=s.label,
+            owner_user_id=s.owner_user_id,
+            credentials={
+                "api_id": str(s.api_id),
+                "api_hash": s.api_hash,
+                "phone": s.me.get("phone"),
+                "username": s.me.get("username"),
+                "session_string": s.session_string,
+                "session_status": {
+                    "alive": True,
+                    "is_authorized": True,
+                    "phone": s.me.get("phone"),
+                    "checked_at": dt.datetime.now(dt.UTC).isoformat(),
+                },
+            },
+            hourly_limit=s.hourly_limit,
+            alive=True,
+            last_checked_at=dt.datetime.now(dt.UTC),
+            last_alive_at=dt.datetime.now(dt.UTC),
+        )
+        db.add(account)
+        db.commit()
+        db.refresh(account)
+        s.account_id = int(account.id)
+        s.session_string = None  # not needed in memory once persisted
+    return telegram_qr_login.public_view(s)
+
+
+@router.post("/modules/telegram/accounts/qr-login/{token}/password")
+async def telegram_qr_login_password(token: str, payload: QrLoginPasswordRequest, user=Depends(get_current_user)):
+    _qr_session_for(token, user)
+    if not telegram_qr_login.submit_password(token, payload.password):
+        raise HTTPException(status_code=400, detail="Пароль зараз не потрібен")
+    return {"ok": True}
+
+
+@router.post("/modules/telegram/accounts/qr-login/{token}/cancel")
+async def telegram_qr_login_cancel(token: str, user=Depends(get_current_user)):
+    _qr_session_for(token, user)
+    await telegram_qr_login.cancel_qr_login(token)
+    return {"ok": True}
 
 
 @router.post("/modules/telegram/accounts/{account_id}/update-label")
