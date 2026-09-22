@@ -443,3 +443,49 @@ def test_unauthorized_session_is_not_a_terminal_target_error():
 
 async def _false():
     return False
+
+
+def test_client_is_constructed_inside_the_event_loop():
+    """Regression: the worker runs jobs on a thread that has no event loop.
+
+    Telethon's TelegramClient binds to the running loop in its constructor, so
+    building it in sync code killed every real onboard job with "There is no
+    current event loop in thread 'asyncio_0'" before a request was ever sent.
+    asyncio.get_running_loop() raises in plain sync code and succeeds inside
+    asyncio.run(), so this pins the factory to the latter.
+    """
+    session = _session()
+    target, job = _queued(session)
+    built_with_loop: list[bool] = []
+
+    def factory(account):
+        try:
+            asyncio.get_running_loop()
+            built_with_loop.append(True)
+        except RuntimeError:
+            built_with_loop.append(False)
+        return _FakeClient()
+
+    onb.run_onboard_job(session, job, target, client_factory=factory)
+    session.commit()
+
+    assert built_with_loop == [True]
+    assert target.onboarding_step == "joined"
+
+
+def test_run_defers_while_pool_is_only_cooling_down():
+    """A cooldown is a pause, not an absence: the job must come back, not fail."""
+    session = _session()
+    target, job = _queued(session)
+    acc = session.execute(select(ParserAccount)).scalar_one()
+    acc.cooldown_until = dt.datetime.now(dt.UTC) + dt.timedelta(minutes=10)
+    session.commit()
+    client = _FakeClient()
+
+    with pytest.raises(DeferJob) as info:
+        onb.run_onboard_job(session, job, target, client_factory=lambda acc: client)
+
+    assert 500 < info.value.seconds <= 601
+    assert client.calls == []
+    assert target.onboarding_step == "queued"
+    assert target.onboarding_status.value == "needs_account"

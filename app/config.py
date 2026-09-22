@@ -45,7 +45,12 @@ class Settings(BaseSettings):
     darknet_parallel_jobs_per_account: int = 1
     web_parallel_jobs_per_account: int = 2
     telegram_fetch_limit: int = 200
-    telegram_fetch_timeout_seconds: int = 180
+    # ponytail: media is downloaded inline inside this window and a timeout
+    # discards the whole batch, so a 300-message batch with photos and video
+    # could never finish under the old 180s and retried until it gave up.
+    # This is a ceiling, not a delay: fast batches still return immediately.
+    # Move media download out of the fetch window if batches keep growing.
+    telegram_fetch_timeout_seconds: int = 900
     telegram_listener_refresh_seconds: int = 30
     telegram_qr_login_ttl_seconds: int = 180
     telegram_join_min_gap_seconds: int = 900

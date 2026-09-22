@@ -119,3 +119,23 @@ def test_interval_gate_skips_when_recent():
     assert second["checked"] == 0
     state = session.get(ServiceState, "telegram_liveness_last_run")
     assert state is not None
+
+
+def test_failover_skips_inactive_targets():
+    """A channel the user switched off is detached but never re-joined elsewhere."""
+    session = _session()
+    acc, t1, t2 = _setup(session)
+    t2.is_active = False
+    session.commit()
+    now = dt.datetime.now(dt.UTC)
+
+    live.check_accounts_liveness(session, now=now, checker=_dead, force=True)
+    result = live.check_accounts_liveness(session, now=now + dt.timedelta(minutes=11), checker=_dead, force=True)
+    session.commit()
+
+    assert result["failed_over"] == 1
+    links = session.execute(select(TargetAccountLink)).scalars().all()
+    assert all(not l.is_active for l in links)
+    jobs = session.execute(select(ParseJob).where(ParseJob.job_key.like("onboard:%"))).scalars().all()
+    assert [j.target_id for j in jobs] == [t1.id]
+    assert t2.onboarding_step == "idle"

@@ -277,6 +277,7 @@ def _dead_account_with_links(session, *, identity_username="alice", identity_pho
         pool_mode="dedicated",
         hourly_limit=42,
         alive=False,
+        is_active=False,
         dead_reason="Session is not authorized",
         credentials={
             "api_id": 1, "api_hash": "h", "phone": identity_phone, "username": identity_username,
@@ -340,6 +341,7 @@ def test_reauth_qr_updates_existing_row_and_preserves_links(client, monkeypatch)
 
     session.refresh(acc)
     assert acc.alive is True
+    assert acc.is_active is True  # revived accounts return to the pool
     assert acc.dead_reason is None
     assert acc.last_alive_at is not None and acc.last_checked_at is not None
     assert acc.credentials["session_string"] == "NEW-LIVE-SESSION"
@@ -377,6 +379,7 @@ def test_reauth_phone_code_updates_existing_row(client, monkeypatch):
 
     session.refresh(acc)
     assert acc.alive is True
+    assert acc.is_active is True  # revived accounts return to the pool
     assert acc.dead_reason is None
     assert acc.credentials["session_string"] == "NEW-LIVE-SESSION"
     session.refresh(links[0])

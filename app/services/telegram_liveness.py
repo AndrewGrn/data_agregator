@@ -49,6 +49,10 @@ def failover_account(session: Session, account: ParserAccount, *, now: dt.dateti
         if target is None:
             continue
         target.onboarding_status = OnboardingStatus.needs_account
+        if not target.is_active:
+            # Switched off by the user: detach, but do not spend a join on it.
+            target.onboarding_step = "idle"
+            continue
         if account.pool_mode == "shared":
             target.onboarding_step = "queued"
             target.onboarding_error = None

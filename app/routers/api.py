@@ -3295,6 +3295,10 @@ def _apply_telegram_reauth(
     creds["liveness_failures"] = 0
     account.credentials = creds
     account.alive = True
+    # A revived session is useless while the row stays disabled: pick_account()
+    # and the listener both filter on is_active, so a re-authorised account
+    # would never be handed a channel again.
+    account.is_active = True
     account.last_alive_at = now
     account.last_checked_at = now
     account.dead_reason = None

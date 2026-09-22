@@ -204,6 +204,32 @@ def _available(account: ParserAccount, now: dt.datetime) -> bool:
     return True
 
 
+def pool_retry_wait_seconds(session: Session, *, now: dt.datetime) -> int:
+    """Seconds until a paused pool account may be usable again; 0 = nothing to wait for.
+
+    An empty pick is terminal only when no live shared account exists at all.
+    A cooldown or a dented health score is a pause, not an absence: failing the
+    target on it left every channel stuck at "no accounts" after one bad batch.
+    """
+    accounts = session.execute(
+        select(ParserAccount).where(
+            ParserAccount.parser_type == "telegram",
+            ParserAccount.is_active.is_(True),
+            ParserAccount.pool_mode == "shared",
+        )
+    ).scalars().all()
+    waits: list[int] = []
+    for a in accounts:
+        if a.alive is False or (a.credentials or {}).get("channels_full"):
+            continue
+        cooldown_until = _aware(a.cooldown_until)
+        if cooldown_until and cooldown_until > now:
+            waits.append(int((cooldown_until - now).total_seconds()) + 1)
+        elif a.health_score < 20:
+            waits.append(600)  # health only recovers via successful jobs elsewhere
+    return min(waits) if waits else 0
+
+
 def pick_account(session: Session, target: Target, *, now: dt.datetime) -> ParserAccount | None:
     """Prefer an account that is already a member; otherwise the least loaded."""
     # ponytail: this SELECT has no FOR UPDATE, so two worker processes can both
@@ -318,13 +344,21 @@ async def _resolve_only(client: Any, identifier: str) -> JoinOutcome:
     return JoinOutcome(identifier=_canonical(entity), kind=_kind_of(entity), title=getattr(entity, "title", None), joined=False)
 
 
-async def _with_client(client: Any, coro_factory):
+async def _with_client(make_client, coro_factory):
+    """Build the Telethon client inside the loop, then run one coroutine on it.
+
+    TelegramClient.__init__ binds itself to the current event loop, and the
+    worker executes jobs on a plain thread that has none. Constructing it in
+    sync code therefore dies with "There is no current event loop in thread
+    'asyncio_N'" before a single request is sent.
+    """
+    client = make_client()
     await client.connect()
     try:
         if not await client.is_user_authorized():
             # Not a ValueError: that is the terminal "bad identifier" signal.
             raise RuntimeError("account session is not authorized")
-        return await coro_factory()
+        return await coro_factory(client)
     finally:
         await client.disconnect()
 
@@ -394,6 +428,10 @@ def run_onboard_job(
     else:
         account = pick_account(session, target, now=now)
         if account is None:
+            wait = pool_retry_wait_seconds(session, now=now)
+            if wait > 0:
+                target.onboarding_step = "queued"
+                raise DeferJob(seconds=min(wait, 3600), reason="усі акаунти пулу на паузі (cooldown)")
             _fail(target, "немає доступних акаунтів пулу")
             return
 
@@ -411,14 +449,14 @@ def run_onboard_job(
             raise DeferJob(seconds=wait, reason=f"join pacing on account #{account.id}")
 
     target.onboarding_step = "joining" if needs_join else "resolving"
-    client = client_factory(account)
+    make_client = lambda: client_factory(account)  # noqa: E731 - built inside the loop
 
     try:
         if needs_join:
-            outcome = asyncio.run(_with_client(client, lambda: join_channel(client, target.identifier)))
+            outcome = asyncio.run(_with_client(make_client, lambda c: join_channel(c, target.identifier)))
             register_join(account, now)
         else:
-            outcome = asyncio.run(_with_client(client, lambda: _resolve_only(client, target.identifier)))
+            outcome = asyncio.run(_with_client(make_client, lambda c: _resolve_only(c, target.identifier)))
     except FloodWaitError as exc:
         seconds = int(getattr(exc, "seconds", 60) or 60)
         account.cooldown_until = now + dt.timedelta(seconds=seconds)
@@ -443,7 +481,7 @@ def run_onboard_job(
         logger.info("onboard join request pending target=%s account=%s", target.id, account.id)
         return
     except UserAlreadyParticipantError:
-        outcome = asyncio.run(_with_client(client, lambda: _resolve_only(client, target.identifier)))
+        outcome = asyncio.run(_with_client(make_client, lambda c: _resolve_only(c, target.identifier)))
     except _TERMINAL_JOIN_ERRORS as exc:
         _fail(target, f"{type(exc).__name__}: {exc}")
         return

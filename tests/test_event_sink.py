@@ -182,7 +182,21 @@ def test_payload_with_datetime_and_bytes_round_trips():
 
     stored = session.query(RawEvent).one()
     assert stored.payload["raw"]["date"] == moment.isoformat()
-    assert stored.payload["raw"]["photo"] == "binary"
+    assert stored.payload["raw"]["photo"] == "YmluYXJ5"  # base64("binary"), lossless
+
+
+def test_serializer_never_emits_nul_which_jsonb_rejects():
+    """Regression: a real Telethon file_reference (random bytes) decoded as UTF-8
+    yielded strings full of NUL and Postgres refused the whole batch with
+    UntranslatableCharacter. Binary must go out as base64 and NUL must never
+    survive in any string."""
+    from app.db import json_serializer
+
+    out = json_serializer({"file_reference": b"\x00\x01\xff\x00", "text": "a\x00b", "n": [b"\x00"]})
+
+    assert "\\u0000" not in out
+    assert '"file_reference": "AAH/AA=="' in out
+    assert '"text": "ab"' in out
 
 
 @pytest.mark.postgres
