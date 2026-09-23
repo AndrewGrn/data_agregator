@@ -9,8 +9,9 @@ services:
       - "--api.insecure=true"
       - "--log.level=DEBUG"
     ports:
-      - "80:80"
-      - "8081:8080"
+      - "${HTTP_PORT:-80}:80"
+      # dashboard: loopback only, it exposes the whole routing table
+      - "127.0.0.1:${TRAEFIK_DASHBOARD_PORT:-8081}:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
 
@@ -23,7 +24,7 @@ services:
     environment:
       VITE_API_BASE: http://aggredata.localhost
     ports:
-      - "${FRONTEND_PORT:-5173}:5173"
+      - "127.0.0.1:${FRONTEND_PORT:-5173}:5173"
     command: sh -c "npm run dev -- --host 0.0.0.0 --port 5173"
     labels:
       - "traefik.enable=true"
@@ -51,7 +52,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -67,7 +68,7 @@ services:
         soft: 262144
         hard: 262144
     ports:
-      - "127.0.0.1:8123:8123"  # HTTP only; native 9000 would collide with MinIO
+      - "127.0.0.1:${CLICKHOUSE_HTTP_PORT:-8123}:8123"  # HTTP only; native 9000 would collide with MinIO
     volumes:
       - chdata:/var/lib/clickhouse
 
@@ -80,15 +81,15 @@ services:
       - "-m"
       - "8222"
     ports:
-      - "4222:4222"
-      - "8222:8222"
+      - "127.0.0.1:${NATS_PORT:-4222}:4222"
+      - "127.0.0.1:${NATS_MONITOR_PORT:-8222}:8222"
     volumes:
       - nats_data:/data
 
   torproxy:
     image: dperson/torproxy:latest
     ports:
-      - "9050:9050"
+      - "127.0.0.1:${TOR_PORT:-9050}:9050"
 
   minio:
     image: minio/minio:latest
@@ -97,8 +98,8 @@ services:
       MINIO_ROOT_PASSWORD: miniosecret
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio_data:/data
 
@@ -112,7 +113,7 @@ services:
       - torproxy
       - minio
     ports:
-      - "${API_PORT:-8000}:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     volumes:
       - raw_data:/app/data/raw
     command: sh -c "python -m app.cli db-upgrade && uvicorn app.main:app --host 0.0.0.0 --port 8000"

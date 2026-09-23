@@ -1,0 +1,56 @@
+#!/bin/bash
+# Deploy on push: check the pushed branch out into a work tree, rebuild every
+# image and bring the stack up.
+#
+# Installed as <bare repo>/hooks/post-receive on the server. It runs with the
+# bare repo as $PWD and GIT_DIR pointing at it, which would otherwise leak into
+# the checkout, so GIT_DIR is set explicitly and the work tree is passed in.
+#
+# Every service is rebuilt, never a subset: each one builds its own image from
+# the same context, and rebuilding part of the stack has twice put a container
+# on stale code that crashed against a migrated database.
+set -euo pipefail
+
+BRANCH="${DEPLOY_BRANCH:-main}"
+GIT_DIR_ABS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEPLOY_DIR="${DEPLOY_DIR:-$HOME/deploy/data_agregator}"
+LOG="$HOME/deploy/deploy.log"
+
+mkdir -p "$DEPLOY_DIR" "$(dirname "$LOG")"
+
+say() { echo "[deploy] $*" | tee -a "$LOG"; }
+
+while read -r _old new ref; do
+  [ "$ref" = "refs/heads/$BRANCH" ] || continue
+
+  say "$(date -Is) ${new:0:12} -> $DEPLOY_DIR"
+
+  # The .env holds this host's secrets and ports and is deliberately not in git;
+  # refuse rather than start the stack with shipped defaults.
+  if [ ! -f "$DEPLOY_DIR/.env" ]; then
+    say "ПОМИЛКА: немає $DEPLOY_DIR/.env — створіть його (scripts/generate_secrets.py) і повторіть push"
+    exit 1
+  fi
+
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_QUARANTINE_PATH
+  git --git-dir="$GIT_DIR_ABS" --work-tree="$DEPLOY_DIR" checkout -f "$BRANCH"
+  say "код оновлено"
+
+  cd "$DEPLOY_DIR"
+  say "збірка образів (усіх)"
+  docker compose build 2>&1 | tail -20 | tee -a "$LOG"
+
+  say "підняття стека"
+  docker compose up -d --remove-orphans 2>&1 | tail -30 | tee -a "$LOG"
+
+  # Migrations run inside the api container on boot (python -m app.cli db-upgrade).
+  say "стан:"
+  docker compose ps --format '{{.Service}}\t{{.State}}' 2>&1 | tee -a "$LOG"
+
+  failed="$(docker compose ps --format '{{.Service}} {{.State}}' | awk '$2!="running"{print $1}' | tr '\n' ' ')"
+  if [ -n "$failed" ]; then
+    say "УВАГА: не запущено — $failed"
+    exit 1
+  fi
+  say "готово"
+done
