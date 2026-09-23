@@ -79,7 +79,10 @@ export type AdminResources = {
   }>;
 };
 
-const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "http://localhost:8000";
+// Empty means same-origin: Traefik serves the SPA and /api on one entrypoint, so
+// relative URLs follow whatever host the page was opened with. Pinning an absolute
+// URL here is what made the app reachable only as aggredata.localhost.
+const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
 
 export class ApiError extends Error {
   status: number;

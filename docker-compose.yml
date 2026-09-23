@@ -22,13 +22,14 @@ services:
     depends_on:
       - api
     environment:
-      VITE_API_BASE: http://aggredata.localhost
+      # Empty = same-origin. Set only to point the SPA at a different API host.
+      VITE_API_BASE: "${VITE_API_BASE:-}"
     ports:
       - "127.0.0.1:${FRONTEND_PORT:-5173}:5173"
     command: sh -c "npm run dev -- --host 0.0.0.0 --port 5173"
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.aggredata_front.rule=Host(`aggredata.localhost`)"
+      - "traefik.http.routers.aggredata_front.rule=${TRAEFIK_FRONT_RULE:-PathPrefix(`/`)}"
       - "traefik.http.routers.aggredata_front.entrypoints=web"
       - "traefik.http.routers.aggredata_front.priority=1"
       - "traefik.http.services.aggredata_front.loadbalancer.server.port=5173"
@@ -121,7 +122,7 @@ services:
     command: sh -c "python -m app.cli db-upgrade && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.aggredata_api.rule=Host(`aggredata.localhost`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.aggredata_api.rule=${TRAEFIK_API_RULE:-PathPrefix(`/api`)}"
       - "traefik.http.routers.aggredata_api.entrypoints=web"
       - "traefik.http.routers.aggredata_api.priority=100"
       - "traefik.http.services.aggredata_api.loadbalancer.server.port=8000"

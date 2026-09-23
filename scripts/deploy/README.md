@@ -39,6 +39,19 @@ FRONTEND_PORT=55173
 TRAEFIK_DASHBOARD_PORT=58081
 ```
 
+## Хости й адреси
+
+Traefik за замовчуванням відповідає на будь-який `Host`, а SPA звертається до
+API відносними URL — тож стек відкривається і за іменем, і за IP без
+перезбірки. Щоб прив'язати до конкретного імені, задайте в `.env`:
+
+```
+TRAEFIK_FRONT_RULE=Host(`example.com`)
+TRAEFIK_API_RULE=Host(`example.com`) && PathPrefix(`/api`)
+```
+
+`VITE_API_BASE` лишайте порожнім, якщо API живе на тому ж домені.
+
 ## Звідки пушити
 
 ```bash
