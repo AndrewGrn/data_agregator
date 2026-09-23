@@ -134,3 +134,42 @@ def test_integration_roundtrip(ch_client, monkeypatch):
             app.dependency_overrides.clear()
             portal.call(app.state.ch_client.close)
             app.state.ch_client = None
+
+
+def test_post_search_takes_a_json_body(client):
+    """Cyrillic, wallet fragments and phrases need percent-encoding in a URL,
+    which is where hand-written calls kept breaking. The body form avoids it."""
+    c, calls = client
+
+    r = c.post("/api/v2/events/search", json={
+        "q": "курьеры наличных", "nickname": "боб", "author_id": "1", "phone": "+38 (067)",
+        "target_id": 3, "parser_type": "telegram", "limit": 50, "since": "2026-09-01T00:00:00Z",
+    })
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["next_cursor"] == "CURSOR" and body["limit"] == 50
+    f = calls["filters"]
+    assert f.q == "курьеры наличных" and f.nickname == "боб" and f.phone == "+38 (067)"
+    assert f.target_id == 3 and f.parser_type == "telegram" and f.owner_user_id == 7
+    assert f.since == dt.datetime(2026, 9, 1, tzinfo=dt.UTC)
+
+
+def test_post_search_validates_the_same_way_as_the_query_form(client):
+    c, calls = client
+    assert c.post("/api/v2/events/search", json={"limit": 5000}).status_code == 200 and calls["limit"] == 500
+    assert c.post("/api/v2/events/search", json={"limit": 0}).status_code == 422
+    assert c.post("/api/v2/events/search", json={"parser_type": "nope"}).status_code == 400
+    assert c.post("/api/v2/events/search", json={"since": "yesterday"}).status_code == 422
+    assert c.post("/api/v2/events/search", json={}).status_code == 200, "an empty body is a valid search"
+
+
+def test_post_search_requires_auth():
+    app.dependency_overrides.clear()
+    assert TestClient(app).post("/api/v2/events/search", json={}).status_code == 401
+
+
+def test_post_search_is_async():
+    import inspect
+    from app.routers import events_v2
+    assert inspect.iscoroutinefunction(events_v2.search_events_v2_post)
