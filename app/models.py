@@ -161,6 +161,9 @@ class Target(Base):
     onboarding_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Soft delete: raw_events/parse_jobs CASCADE on this FK, so a hard delete would wipe history.
     deleted_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    # Flat, user-defined grouping for the module list. No groups table: a group has
+    # no attributes of its own and lives exactly as long as a target names it.
+    group_name: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC))
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC), onupdate=lambda: dt.datetime.now(dt.UTC)

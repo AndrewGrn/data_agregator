@@ -530,3 +530,48 @@ def test_queued_row_exposes_why_and_when_it_will_retry(client):
     session.commit()
     rows = c.get("/api/modules/telegram").json()["targets"]
     assert next(r for r in rows if r["id"] == target.id)["onboarding_retry_at"] is None
+
+
+def test_group_is_set_on_add_and_moved_by_drag(client):
+    """Groups are a flat string on the target: assign on add, move later, clear with null."""
+    c, session, _ = client
+
+    row = c.post("/api/modules/telegram/onboard", json={"input": "@durov", "group_name": "  Крипта  "}).json()
+    assert row["group_name"] == "Крипта", "whitespace is trimmed"
+
+    moved = c.post(f"/api/modules/telegram/targets/{row['id']}/group", json={"group_name": "Дропи"})
+    assert moved.status_code == 200 and moved.json()["group_name"] == "Дропи"
+
+    cleared = c.post(f"/api/modules/telegram/targets/{row['id']}/group", json={"group_name": None})
+    assert cleared.json()["group_name"] is None, "null takes it out of every group"
+
+    listed = next(r for r in c.get("/api/modules/telegram").json()["targets"] if r["id"] == row["id"])
+    assert listed["group_name"] is None
+
+
+def test_adding_without_a_group_keeps_the_existing_one(client):
+    """A re-onboard (failover, retry button) must not silently wipe the grouping."""
+    c, session, _ = client
+    row = c.post("/api/modules/telegram/onboard", json={"input": "@durov", "group_name": "Крипта"}).json()
+
+    again = c.post("/api/modules/telegram/onboard", json={"input": "@durov"}).json()
+
+    assert again["id"] == row["id"] and again["group_name"] == "Крипта"
+
+
+def test_group_name_is_capped_and_not_shared_across_users(client, pg_session):
+    c, session, _ = client
+    row = c.post("/api/modules/telegram/onboard", json={"input": "@durov", "group_name": "x" * 200}).json()
+    assert len(row["group_name"]) == 64, "capped to the column width instead of erroring"
+
+    other = User(username="other", password_hash="x", role="user", is_active=True)
+    session.add(other)
+    session.commit()
+    target = session.get(Target, row["id"])
+    target.owner_user_id = int(other.id)
+    session.commit()
+
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+        id=99, is_admin=False, role="user", is_active=True
+    )
+    assert c.post(f"/api/modules/telegram/targets/{row['id']}/group", json={"group_name": "чуже"}).status_code == 403

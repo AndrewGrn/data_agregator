@@ -500,6 +500,7 @@ def _telegram_target_row(
         "name": target.name,
         "identifier": target.identifier,
         "kind": (target.config or {}).get("kind"),
+        "group_name": target.group_name,
         "media_enabled": bool((target.config or {}).get("media_enabled", False)),
         "is_active": bool(target.is_active),
         "onboarding_status": target.onboarding_status.value if target.onboarding_status else "ready",
@@ -2294,6 +2295,11 @@ class OnboardRequest(BaseModel):
     input: str
     account_id: int | None = None
     allow_join: bool = True
+    group_name: str | None = None
+
+
+class TargetGroupRequest(BaseModel):
+    group_name: str | None = None
 
 
 @router.post("/modules/telegram/onboard")
@@ -2309,6 +2315,7 @@ def telegram_onboard(payload: OnboardRequest, db: Session = Depends(get_db), use
             owner_user_id=int(user.id),
             account_id=payload.account_id,
             allow_join=payload.allow_join,
+            group_name=payload.group_name,
             acting_user_id=int(user.id),
             acting_is_admin=_is_admin(user),
         )
@@ -2446,6 +2453,20 @@ def telegram_target_reassign(
 def telegram_target_retry_onboarding(target_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
     target = _ensure_target_access(db.get(Target, int(target_id)), user)
     telegram_onboarding.onboard(db, raw_input=target.identifier, owner_user_id=target.owner_user_id, allow_join=True)
+    db.commit()
+    return _telegram_target_row(db, target)
+
+
+@router.post("/modules/telegram/targets/{target_id}/group")
+def telegram_target_set_group(
+    target_id: int, payload: TargetGroupRequest, db: Session = Depends(get_db), user=Depends(get_current_user)
+):
+    """Move a target into a group, or out of every group when given null/blank."""
+    target = _ensure_target_access(db.get(Target, int(target_id)), user)
+    if target.parser_type != ParserType.telegram:
+        raise HTTPException(status_code=404, detail="Telegram ціль не знайдена")
+    name = telegram_onboarding.normalize_group_name(payload.group_name or "")
+    target.group_name = name or None
     db.commit()
     return _telegram_target_row(db, target)
 

@@ -103,6 +103,7 @@ def onboard(
     owner_user_id: int | None,
     account_id: int | None = None,
     allow_join: bool = True,
+    group_name: str | None = None,
     acting_user_id: int | None = None,
     acting_is_admin: bool = False,
 ) -> Target:
@@ -133,6 +134,11 @@ def onboard(
         )
         session.add(target)
         session.flush()
+
+    normalized_group = normalize_group_name(group_name)
+    if normalized_group is not None:
+        # Only set when asked: a re-onboard (failover, retry) must not wipe the group.
+        target.group_name = normalized_group or None
 
     target.is_active = True
     target.deleted_at = None  # re-adding a deleted channel brings it back with its history
@@ -232,6 +238,16 @@ def pool_retry_wait_seconds(session: Session, *, now: dt.datetime) -> int:
         if cooldown_until and cooldown_until > now:
             waits.append(int((cooldown_until - now).total_seconds()) + 1)
     return min(waits) if waits else 0
+
+
+GROUP_NAME_MAX = 64
+
+
+def normalize_group_name(value: str | None) -> str | None:
+    """Trim and cap a group name. None means "leave the group alone"; "" means "remove it"."""
+    if value is None:
+        return None
+    return " ".join(str(value).split())[:GROUP_NAME_MAX]
 
 
 def is_private_identifier(identifier: str) -> bool:

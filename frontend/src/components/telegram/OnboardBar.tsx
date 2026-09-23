@@ -1,12 +1,19 @@
 import { useState } from "react";
-import { Link2, Loader2 } from "lucide-react";
+import { FolderPlus, Link2, Loader2 } from "lucide-react";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { ApiError } from "../../api";
 import { onboardTelegramTarget, type TelegramTargetRow } from "../../api/telegram";
 
-export function OnboardBar({ onQueued }: { onQueued: (row: TelegramTargetRow) => void }) {
+export function OnboardBar({
+  onQueued,
+  groups = []
+}: {
+  onQueued: (row: TelegramTargetRow) => void;
+  groups?: string[];
+}) {
   const [value, setValue] = useState("");
+  const [group, setGroup] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -16,7 +23,7 @@ export function OnboardBar({ onQueued }: { onQueued: (row: TelegramTargetRow) =>
     setBusy(true);
     setError(null);
     try {
-      const row = await onboardTelegramTarget(input);
+      const row = await onboardTelegramTarget(input, group.trim() ? { group_name: group.trim() } : {});
       onQueued(row);
       setValue("");
     } catch (e) {
@@ -40,6 +47,24 @@ export function OnboardBar({ onQueued }: { onQueued: (row: TelegramTargetRow) =>
             disabled={busy}
             aria-label="Ідентифікатор каналу"
           />
+        </div>
+        <div className="relative w-56 shrink-0">
+          <FolderPlus className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            className="pl-9"
+            list="telegram-group-suggestions"
+            name="telegram-onboard-group"
+            placeholder="Група (необов'язково)"
+            value={group}
+            onChange={(e) => setGroup(e.target.value)}
+            disabled={busy}
+            aria-label="Група"
+          />
+          <datalist id="telegram-group-suggestions">
+            {groups.map((g) => (
+              <option key={g} value={g} />
+            ))}
+          </datalist>
         </div>
         <Button type="submit" disabled={busy || !value.trim()}>
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Підключити"}

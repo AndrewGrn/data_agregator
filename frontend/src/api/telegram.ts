@@ -8,6 +8,7 @@ export interface TelegramTargetRow {
   name: string;
   identifier: string;
   kind: TargetKind;
+  group_name: string | null;
   media_enabled: boolean;
   is_active: boolean;
   onboarding_status: "ready" | "needs_account" | "blocked";
@@ -57,8 +58,16 @@ export function fetchTelegramModule() {
   return apiGet<{ targets: TelegramTargetRow[]; jobs: TelegramJobRow[]; [k: string]: unknown }>(BASE);
 }
 
-export function onboardTelegramTarget(input: string, opts: { account_id?: number; allow_join?: boolean } = {}) {
+export function onboardTelegramTarget(
+  input: string,
+  opts: { account_id?: number; allow_join?: boolean; group_name?: string } = {}
+) {
   return apiPost<TelegramTargetRow>(`${BASE}/onboard`, { input, ...opts });
+}
+
+/** Move a target into a group. Pass null to take it out of every group. */
+export function setTelegramTargetGroup(id: number, group_name: string | null) {
+  return apiPost<TelegramTargetRow>(`${BASE}/targets/${id}/group`, { group_name });
 }
 
 export function fetchTelegramAccounts() {

@@ -72,7 +72,15 @@ export function statusOf(row: TelegramTargetRow): { tone: "ok" | "warn" | "bad" 
   return { tone: "ok", text: "Моніториться" };
 }
 
-export function TargetRow({ row, onChanged }: { row: TelegramTargetRow; onChanged: () => void }) {
+export function TargetRow({
+  row,
+  onChanged,
+  draggable = false
+}: {
+  row: TelegramTargetRow;
+  onChanged: () => void;
+  draggable?: boolean;
+}) {
   const Icon = row.kind ? KIND_ICON[row.kind] : Hash;
   const status = statusOf(row);
   const inProgress = ["queued", "resolving", "joining"].includes(row.onboarding_step);
@@ -83,6 +91,15 @@ export function TargetRow({ row, onChanged }: { row: TelegramTargetRow; onChange
   };
 
   return (
+    <div
+      draggable={draggable}
+      onDragStart={(e) => {
+        // The group header reads this id on drop; "move" gives the right cursor.
+        e.dataTransfer.setData("text/telegram-target-id", String(row.id));
+        e.dataTransfer.effectAllowed = "move";
+      }}
+      className={draggable ? "cursor-grab active:cursor-grabbing" : undefined}
+    >
     <DataRow
       leading={<Icon className="h-4 w-4 text-muted-foreground" aria-hidden />}
       primary={<span className="font-medium">{row.name}</span>}
@@ -145,5 +162,6 @@ export function TargetRow({ row, onChanged }: { row: TelegramTargetRow; onChange
         </>
       }
     />
+    </div>
   );
 }
