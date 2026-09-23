@@ -6,7 +6,8 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
-from app.routers import api, auth, ui
+from app.routers import api, auth, events_v2, ui
+from app.services import clickhouse_store
 from app.services.bootstrap import ensure_default_admin, run_migrations
 from app.db import session_scope
 
@@ -29,6 +30,7 @@ app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 app.include_router(auth.router)
 app.include_router(ui.router)
 app.include_router(api.router)
+app.include_router(events_v2.router)
 
 
 @app.on_event("startup")
@@ -36,3 +38,24 @@ def startup() -> None:
     run_migrations()
     with session_scope() as session:
         ensure_default_admin(session)
+
+
+@app.on_event("startup")
+async def startup_clickhouse() -> None:
+    app.state.ch_client = None
+    if not settings.clickhouse_enabled:
+        return
+    try:
+        client = await clickhouse_store.get_async_client()
+        await clickhouse_store.ensure_schema(client)
+        app.state.ch_client = client
+    except Exception as exc:  # noqa: BLE001 - API must still serve everything else
+        import logging
+        logging.getLogger(__name__).error("clickhouse unavailable at startup: %s", exc)
+
+
+@app.on_event("shutdown")
+async def shutdown_clickhouse() -> None:
+    client = getattr(app.state, "ch_client", None)
+    if client is not None:
+        await client.close()
