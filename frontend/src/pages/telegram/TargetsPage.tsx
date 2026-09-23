@@ -1,57 +1,69 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Radio, Settings } from "lucide-react";
+import { FolderPlus, Radio, Settings } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { EmptyState } from "../../components/ui/empty-state";
 import { OnboardBar } from "../../components/telegram/OnboardBar";
 import { TargetGroup, UNGROUPED } from "../../components/telegram/TargetGroup";
-import { fetchTelegramModule, type TelegramTargetRow } from "../../api/telegram";
+import {
+  createTelegramGroup,
+  fetchTelegramGroups,
+  fetchTelegramModule,
+  type TelegramGroup,
+  type TelegramTargetRow
+} from "../../api/telegram";
 
 const IN_PROGRESS = new Set(["queued", "resolving", "joining"]);
 const COLLAPSED_KEY = "telegram.collapsedGroups";
 
 /** Collapsed groups are a per-viewer convenience; losing them must never break the page. */
-function readCollapsed(): Set<string> {
+function readCollapsed(): Set<number> {
   try {
     const raw = window.localStorage.getItem(COLLAPSED_KEY);
-    return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+    return new Set(raw ? (JSON.parse(raw) as number[]) : []);
   } catch {
     return new Set();
   }
 }
 
-function writeCollapsed(names: Set<string>): void {
+function writeCollapsed(ids: Set<number>): void {
   try {
-    window.localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...names]));
+    window.localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...ids]));
   } catch {
     /* private mode / blocked storage: collapsing just stops persisting */
   }
 }
 
-/** Named groups first, alphabetically; the ungrouped bucket always last. */
-export function groupTargets(rows: TelegramTargetRow[]): [string, TelegramTargetRow[]][] {
-  const byName = new Map<string, TelegramTargetRow[]>();
+type Section = { id: number; name: string; rows: TelegramTargetRow[] };
+
+/** Every group in its stored order, empty ones included, then the ungrouped bucket. */
+export function buildSections(groups: TelegramGroup[], rows: TelegramTargetRow[]): Section[] {
+  const byGroup = new Map<number, TelegramTargetRow[]>();
   for (const row of rows) {
-    const key = row.group_name?.trim() || UNGROUPED;
-    const bucket = byName.get(key);
+    const key = row.group_id ?? UNGROUPED;
+    const bucket = byGroup.get(key);
     if (bucket) bucket.push(row);
-    else byName.set(key, [row]);
+    else byGroup.set(key, [row]);
   }
-  return [...byName.entries()].sort(([a], [b]) => {
-    if (a === UNGROUPED) return 1;
-    if (b === UNGROUPED) return -1;
-    return a.localeCompare(b);
-  });
+  const sections: Section[] = groups.map((g) => ({ id: g.id, name: g.name, rows: byGroup.get(g.id) ?? [] }));
+  const ungrouped = byGroup.get(UNGROUPED) ?? [];
+  if (ungrouped.length > 0 || sections.length === 0) {
+    sections.push({ id: UNGROUPED, name: "Без групи", rows: ungrouped });
+  }
+  return sections;
 }
 
 export function TargetsPage() {
   const [rows, setRows] = useState<TelegramTargetRow[]>([]);
+  const [groups, setGroups] = useState<TelegramGroup[]>([]);
   const [loading, setLoading] = useState(true);
-  const [collapsed, setCollapsed] = useState<Set<string>>(readCollapsed);
+  const [collapsed, setCollapsed] = useState<Set<number>>(readCollapsed);
+  const [creating, setCreating] = useState(false);
 
   const load = useCallback(async () => {
-    const data = await fetchTelegramModule();
-    setRows(data.targets);
+    const [module, groupList] = await Promise.all([fetchTelegramModule(), fetchTelegramGroups()]);
+    setRows(module.targets);
+    setGroups(groupList.groups);
     setLoading(false);
   }, []);
 
@@ -68,20 +80,28 @@ export function TargetsPage() {
     return () => window.clearInterval(t);
   }, [busy, load]);
 
-  const groups = useMemo(() => groupTargets(rows), [rows]);
-  const groupNames = useMemo(
-    () => groups.map(([name]) => name).filter((name) => name !== UNGROUPED),
-    [groups]
-  );
+  const sections = useMemo(() => buildSections(groups, rows), [groups, rows]);
 
-  const toggle = (name: string) => {
+  const toggle = (id: number) => {
     setCollapsed((prev) => {
       const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       writeCollapsed(next);
       return next;
     });
+  };
+
+  const addGroup = async () => {
+    const name = window.prompt("Назва нової групи")?.trim();
+    if (!name) return;
+    setCreating(true);
+    try {
+      await createTelegramGroup(name);
+      await load();
+    } finally {
+      setCreating(false);
+    }
   };
 
   return (
@@ -91,23 +111,29 @@ export function TargetsPage() {
           <h1 className="text-2xl font-semibold">Telegram</h1>
           <p className="text-sm text-muted-foreground">
             {rows.length} об'єктів під моніторингом
-            {groupNames.length > 0 ? ` · ${groupNames.length} груп` : null}
+            {groups.length > 0 ? ` · ${groups.length} груп` : null}
           </p>
         </div>
-        <Button asChild variant="outline">
-          <Link to="/telegram/settings">
-            <Settings className="mr-2 h-4 w-4" />
-            Налаштування модуля
-          </Link>
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button type="button" variant="outline" onClick={() => void addGroup()} disabled={creating}>
+            <FolderPlus className="mr-2 h-4 w-4" />
+            Нова група
+          </Button>
+          <Button asChild variant="outline">
+            <Link to="/telegram/settings">
+              <Settings className="mr-2 h-4 w-4" />
+              Налаштування модуля
+            </Link>
+          </Button>
+        </div>
       </header>
 
       <OnboardBar
-        groups={groupNames}
+        groups={groups}
         onQueued={(row) => setRows((prev) => [row, ...prev.filter((r) => r.id !== row.id)])}
       />
 
-      {loading ? null : rows.length === 0 ? (
+      {loading ? null : rows.length === 0 && groups.length === 0 ? (
         <EmptyState
           icon={Radio}
           title="Поки нічого не моніториться"
@@ -116,15 +142,17 @@ export function TargetsPage() {
       ) : (
         <div className="flex flex-col gap-3">
           <p className="text-xs text-muted-foreground">
-            Перетягніть рядок на заголовок групи, щоб перенести його. Клік по заголовку згортає групу.
+            Перетягніть рядок на заголовок групи, щоб перенести його. Клік по заголовку згортає групу, кнопки
+            праворуч керують усією категорією.
           </p>
-          {groups.map(([name, groupRows]) => (
+          {sections.map((section) => (
             <TargetGroup
-              key={name}
-              name={name}
-              rows={groupRows}
-              collapsed={collapsed.has(name)}
-              onToggle={() => toggle(name)}
+              key={section.id}
+              id={section.id}
+              name={section.name}
+              rows={section.rows}
+              collapsed={collapsed.has(section.id)}
+              onToggle={() => toggle(section.id)}
               onChanged={load}
             />
           ))}

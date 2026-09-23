@@ -146,6 +146,27 @@ class ParserAccount(Base):
     targets: Mapped[list[TargetAccountLink]] = relationship(back_populates="account")
 
 
+class TargetGroup(Base):
+    """A first-class grouping of monitored objects.
+
+    A table rather than a name carried by each target: a group survives its last
+    member leaving, can be reordered, and is the handle for settings and bulk
+    actions applied to a whole category.
+    """
+
+    __tablename__ = "target_groups"
+    __table_args__ = (UniqueConstraint("owner_user_id", "name", name="uq_target_group_owner_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(64))
+    owner_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC))
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC), onupdate=lambda: dt.datetime.now(dt.UTC)
+    )
+
+
 class Target(Base):
     __tablename__ = "targets"
 
@@ -161,9 +182,12 @@ class Target(Base):
     onboarding_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Soft delete: raw_events/parse_jobs CASCADE on this FK, so a hard delete would wipe history.
     deleted_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
-    # Flat, user-defined grouping for the module list. No groups table: a group has
-    # no attributes of its own and lives exactly as long as a target names it.
-    group_name: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # Deleting a group must never delete its channels, hence SET NULL: they fall
+    # back into the ungrouped bucket and keep collecting.
+    group_id: Mapped[int | None] = mapped_column(
+        ForeignKey("target_groups.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    group: Mapped["TargetGroup | None"] = relationship(lazy="joined")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC))
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC), onupdate=lambda: dt.datetime.now(dt.UTC)

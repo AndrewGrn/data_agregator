@@ -103,7 +103,7 @@ def onboard(
     owner_user_id: int | None,
     account_id: int | None = None,
     allow_join: bool = True,
-    group_name: str | None = None,
+    group_id: int | None = None,
     acting_user_id: int | None = None,
     acting_is_admin: bool = False,
 ) -> Target:
@@ -135,10 +135,9 @@ def onboard(
         session.add(target)
         session.flush()
 
-    normalized_group = normalize_group_name(group_name)
-    if normalized_group is not None:
+    if group_id is not None:
         # Only set when asked: a re-onboard (failover, retry) must not wipe the group.
-        target.group_name = normalized_group or None
+        target.group_id = int(group_id)
 
     target.is_active = True
     target.deleted_at = None  # re-adding a deleted channel brings it back with its history

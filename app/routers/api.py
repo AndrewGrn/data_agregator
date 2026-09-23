@@ -33,6 +33,7 @@ from app.models import (
     ParseJob,
     ParserAccount,
     ParserType,
+    TargetGroup,
     RawEvent,
     RawEventFile,
     RegistrationToken,
@@ -482,6 +483,14 @@ def _active_account_for(db: Session, target_id: int) -> ParserAccount | None:
     ).scalar_one_or_none()
 
 
+def _ensure_group_access(group: TargetGroup | None, user) -> TargetGroup:
+    if group is None:
+        raise HTTPException(status_code=404, detail="Групу не знайдено")
+    if not _is_admin(user) and group.owner_user_id is not None and int(group.owner_user_id) != int(user.id):
+        raise HTTPException(status_code=403, detail="Немає доступу до цієї групи")
+    return group
+
+
 def _telegram_backfill_state(db: Session, target: Target) -> str:
     """What the backfill is doing right now: off / running / queued / done.
 
@@ -527,7 +536,8 @@ def _telegram_target_row(
         "name": target.name,
         "identifier": target.identifier,
         "kind": (target.config or {}).get("kind"),
-        "group_name": target.group_name,
+        "group_id": int(target.group_id) if target.group_id is not None else None,
+        "group_name": target.group.name if target.group is not None else None,
         "live_enabled": bool((target.config or {}).get("live_enabled", True)),
         "backfill_state": _telegram_backfill_state(db, target),
         "media_enabled": bool((target.config or {}).get("media_enabled", False)),
@@ -2324,11 +2334,17 @@ class OnboardRequest(BaseModel):
     input: str
     account_id: int | None = None
     allow_join: bool = True
-    group_name: str | None = None
+    group_id: int | None = None
 
 
 class TargetGroupRequest(BaseModel):
-    group_name: str | None = None
+    group_id: int | None = None
+
+
+class GroupWriteRequest(BaseModel):
+    name: str
+    position: int | None = None
+    shared: bool = False
 
 
 class TargetModeRequest(BaseModel):
@@ -2349,7 +2365,7 @@ def telegram_onboard(payload: OnboardRequest, db: Session = Depends(get_db), use
             owner_user_id=int(user.id),
             account_id=payload.account_id,
             allow_join=payload.allow_join,
-            group_name=payload.group_name,
+            group_id=payload.group_id,
             acting_user_id=int(user.id),
             acting_is_admin=_is_admin(user),
         )
@@ -2521,14 +2537,111 @@ def telegram_target_set_mode(
 def telegram_target_set_group(
     target_id: int, payload: TargetGroupRequest, db: Session = Depends(get_db), user=Depends(get_current_user)
 ):
-    """Move a target into a group, or out of every group when given null/blank."""
+    """Move a target into a group, or out of every group when given null."""
     target = _ensure_target_access(db.get(Target, int(target_id)), user)
     if target.parser_type != ParserType.telegram:
         raise HTTPException(status_code=404, detail="Telegram ціль не знайдена")
-    name = telegram_onboarding.normalize_group_name(payload.group_name or "")
-    target.group_name = name or None
+    if payload.group_id is None:
+        target.group_id = None
+    else:
+        _ensure_group_access(db.get(TargetGroup, int(payload.group_id)), user)
+        target.group_id = int(payload.group_id)
     db.commit()
     return _telegram_target_row(db, target)
+
+
+@router.get("/modules/telegram/groups")
+def telegram_groups_list(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    """Every group, including empty ones — that is the point of having the table."""
+    stmt = select(TargetGroup)
+    if not _is_admin(user):
+        stmt = stmt.where(TargetGroup.owner_user_id == int(user.id))
+    groups = db.execute(stmt.order_by(TargetGroup.position, TargetGroup.name)).scalars().all()
+    counts = dict(
+        db.execute(
+            select(Target.group_id, func.count()).where(Target.deleted_at.is_(None)).group_by(Target.group_id)
+        ).all()
+    )
+    return {
+        "groups": [
+            {"id": int(g.id), "name": g.name, "position": int(g.position), "targets": int(counts.get(g.id, 0) or 0)}
+            for g in groups
+        ]
+    }
+
+
+@router.post("/modules/telegram/groups")
+def telegram_group_create(payload: GroupWriteRequest, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    name = telegram_onboarding.normalize_group_name(payload.name)
+    if not name:
+        raise HTTPException(status_code=400, detail="Вкажіть назву групи")
+    owner = None if _is_admin(user) and payload.shared else int(user.id)
+    existing = db.execute(
+        select(TargetGroup).where(TargetGroup.owner_user_id == owner, TargetGroup.name == name)
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="Група з такою назвою вже існує")
+    group = TargetGroup(name=name, owner_user_id=owner, position=int(payload.position or 0))
+    db.add(group)
+    db.commit()
+    return {"id": int(group.id), "name": group.name, "position": int(group.position), "targets": 0}
+
+
+@router.post("/modules/telegram/groups/{group_id}")
+def telegram_group_update(
+    group_id: int, payload: GroupWriteRequest, db: Session = Depends(get_db), user=Depends(get_current_user)
+):
+    group = _ensure_group_access(db.get(TargetGroup, int(group_id)), user)
+    name = telegram_onboarding.normalize_group_name(payload.name)
+    if not name:
+        raise HTTPException(status_code=400, detail="Вкажіть назву групи")
+    clash = db.execute(
+        select(TargetGroup).where(
+            TargetGroup.owner_user_id == group.owner_user_id, TargetGroup.name == name, TargetGroup.id != group.id
+        )
+    ).scalar_one_or_none()
+    if clash is not None:
+        raise HTTPException(status_code=409, detail="Група з такою назвою вже існує")
+    group.name = name
+    if payload.position is not None:
+        group.position = int(payload.position)
+    db.commit()
+    count = db.scalar(select(func.count()).select_from(Target).where(Target.group_id == group.id, Target.deleted_at.is_(None)))
+    return {"id": int(group.id), "name": group.name, "position": int(group.position), "targets": int(count or 0)}
+
+
+@router.post("/modules/telegram/groups/{group_id}/delete")
+def telegram_group_delete(group_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    """Delete the group only. Its objects lose the grouping and keep collecting."""
+    group = _ensure_group_access(db.get(TargetGroup, int(group_id)), user)
+    freed = db.scalar(select(func.count()).select_from(Target).where(Target.group_id == group.id))
+    db.delete(group)
+    db.commit()
+    return {"ok": True, "freed": int(freed or 0)}
+
+
+@router.post("/modules/telegram/groups/{group_id}/mode")
+def telegram_group_set_mode(
+    group_id: int, payload: TargetModeRequest, db: Session = Depends(get_db), user=Depends(get_current_user)
+):
+    """Apply a collection mode to every object in the category at once."""
+    group = _ensure_group_access(db.get(TargetGroup, int(group_id)), user)
+    targets = db.execute(
+        select(Target).where(
+            Target.group_id == group.id, Target.parser_type == ParserType.telegram, Target.deleted_at.is_(None)
+        )
+    ).scalars().all()
+    for target in targets:
+        config = dict(target.config or {})
+        if payload.live_enabled is not None:
+            config["live_enabled"] = bool(payload.live_enabled)
+        if payload.backfill_enabled is not None:
+            backfill = dict(config.get("backfill") or {})
+            backfill["enabled"] = bool(payload.backfill_enabled)
+            config["backfill"] = backfill
+        target.config = config
+    db.commit()
+    return {"ok": True, "updated": len(targets)}
 
 
 @router.post("/modules/telegram/targets/{target_id}/delete")

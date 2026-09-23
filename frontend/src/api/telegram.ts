@@ -8,6 +8,7 @@ export interface TelegramTargetRow {
   name: string;
   identifier: string;
   kind: TargetKind;
+  group_id: number | null;
   group_name: string | null;
   live_enabled: boolean;
   /** off = backfill disabled; queued = waiting for a free slot (one per account) */
@@ -63,9 +64,38 @@ export function fetchTelegramModule() {
 
 export function onboardTelegramTarget(
   input: string,
-  opts: { account_id?: number; allow_join?: boolean; group_name?: string } = {}
+  opts: { account_id?: number; allow_join?: boolean; group_id?: number } = {}
 ) {
   return apiPost<TelegramTargetRow>(`${BASE}/onboard`, { input, ...opts });
+}
+
+export interface TelegramGroup {
+  id: number;
+  name: string;
+  position: number;
+  targets: number;
+}
+
+export function fetchTelegramGroups() {
+  return apiGet<{ groups: TelegramGroup[] }>(`${BASE}/groups`);
+}
+
+export function createTelegramGroup(name: string) {
+  return apiPost<TelegramGroup>(`${BASE}/groups`, { name });
+}
+
+export function renameTelegramGroup(id: number, name: string) {
+  return apiPost<TelegramGroup>(`${BASE}/groups/${id}`, { name });
+}
+
+/** Deletes the group only — its objects lose the grouping and keep collecting. */
+export function deleteTelegramGroup(id: number) {
+  return apiPost<{ ok: boolean; freed: number }>(`${BASE}/groups/${id}/delete`);
+}
+
+/** Apply a collection mode to every object in the category at once. */
+export function setTelegramGroupMode(id: number, mode: { live_enabled?: boolean; backfill_enabled?: boolean }) {
+  return apiPost<{ ok: boolean; updated: number }>(`${BASE}/groups/${id}/mode`, mode);
 }
 
 /** Turn realtime and/or history collection on or off for one object. */
@@ -74,8 +104,8 @@ export function setTelegramTargetMode(id: number, mode: { live_enabled?: boolean
 }
 
 /** Move a target into a group. Pass null to take it out of every group. */
-export function setTelegramTargetGroup(id: number, group_name: string | null) {
-  return apiPost<TelegramTargetRow>(`${BASE}/targets/${id}/group`, { group_name });
+export function setTelegramTargetGroup(id: number, group_id: number | null) {
+  return apiPost<TelegramTargetRow>(`${BASE}/targets/${id}/group`, { group_id });
 }
 
 export function fetchTelegramAccounts() {
