@@ -112,6 +112,18 @@ def db_revision_cmd(message: str, autogenerate: bool) -> None:
     click.echo("Нова ревізія створена.")
 
 
+@cli.command("ch-backfill")
+@click.option("--batch-size", default=5000, type=int, show_default=True)
+def ch_backfill_cmd(batch_size: int) -> None:
+    """Copy every raw_events row into ClickHouse (idempotent)."""
+    from app.db import SessionLocal
+    from app.services.clickhouse_store import backfill_from_postgres
+
+    with SessionLocal() as session:
+        total = backfill_from_postgres(session, batch_size=batch_size)
+    click.echo(f"ClickHouse backfill: {total} rows")
+
+
 @cli.command("generate-telegram-session")
 @click.option("--api-id", required=True, type=int)
 @click.option("--api-hash", required=True, type=str)

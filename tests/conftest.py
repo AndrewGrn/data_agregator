@@ -14,6 +14,7 @@ from sqlalchemy.orm import sessionmaker
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "postgres: requires a real PostgreSQL database")
+    config.addinivalue_line("markers", "clickhouse: requires a real ClickHouse server")
 
 
 @pytest.fixture
@@ -54,3 +55,39 @@ def pg_session():
     yield session
     session.close()
     engine.dispose()
+
+
+@pytest.fixture
+def ch_client():
+    """Sync clickhouse-connect client against a throwaway `_test` database.
+
+    Skipped when TEST_CLICKHOUSE_URL is unset (e.g. http://default:@127.0.0.1:8123/aggregator_test).
+    Drops and recreates the events table on every use.
+    """
+    url = os.environ.get("TEST_CLICKHOUSE_URL")
+    if not url:
+        pytest.skip("TEST_CLICKHOUSE_URL not set")
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    database = parsed.path.strip("/") or "aggregator_test"
+    if not database.endswith("_test"):
+        pytest.fail(f"refusing to wipe {database!r}: TEST_CLICKHOUSE_URL database must end in '_test'")
+
+    import clickhouse_connect
+    from app.services import clickhouse_store as store
+
+    admin = clickhouse_connect.get_client(
+        host=parsed.hostname or "127.0.0.1", port=parsed.port or 8123,
+        username=parsed.username or "default", password=parsed.password or "",
+    )
+    admin.command(f"CREATE DATABASE IF NOT EXISTS {database}")
+    admin.command(f"DROP TABLE IF EXISTS {database}.{store.EVENTS_TABLE}")
+    client = clickhouse_connect.get_client(
+        host=parsed.hostname or "127.0.0.1", port=parsed.port or 8123,
+        username=parsed.username or "default", password=parsed.password or "", database=database,
+    )
+    store.ensure_schema_sync(client)
+    yield client
+    client.close()
+    admin.close()

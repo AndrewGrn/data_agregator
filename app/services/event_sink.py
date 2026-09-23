@@ -6,10 +6,16 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.models import EventFile, RawEvent, RawEventFile, Target
 from app.plugins.base import FileRef, ParsedEvent
+from app.services import clickhouse_store
 
 logger = logging.getLogger(__name__)
+
+
+def settings_clickhouse_enabled() -> bool:
+    return bool(get_settings().clickhouse_enabled)
 
 # Postgres error code for a unique-key violation (our dedup path). Anything
 # else caught here — most importantly a foreign-key violation on account_id,
@@ -141,5 +147,11 @@ def persist_events(
         if event.external_id:
             known.add(str(event.external_id))
         written.append(raw_event)
+
+    if written and settings_clickhouse_enabled():
+        # Mirror exactly the rows Postgres accepted. rows_from_raw_events (the
+        # backfill mapping) derives the same event_key from the same row, so a
+        # later `ch-backfill` collapses onto these instead of duplicating them.
+        clickhouse_store.insert_events_sync(clickhouse_store.rows_from_raw_events(written))
 
     return written
