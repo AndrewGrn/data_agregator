@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 from app.models import RawEvent, Target
 
 FTS_CONFIG = "simple"
+# pg_trgm builds no trigrams for shorter input, so its index cannot serve it.
+TRIGRAM_MIN_CHARS = 3
 
 
 def _tsquery(query: str):
@@ -72,6 +74,13 @@ def search_messages(
             RawEvent.author_id.ilike(pattern, escape="\\"),
             RawEvent.external_id.ilike(pattern, escape="\\"),
         ]
+        # to_tsvector indexes whole words, so a fragment ("курьер" inside
+        # "курьеры", a slice of a wallet address, an @nick quoted in a message)
+        # never matches the FTS arm. The trigram index on text covers exactly
+        # that. GIN trigram needs 3 characters to produce a trigram; below that
+        # the index cannot be used and the arm would force a seq scan.
+        if len(text_query) >= TRIGRAM_MIN_CHARS:
+            arms.append(RawEvent.text.ilike(pattern, escape="\\"))
         if target_ids:
             arms.append(RawEvent.target_id.in_(target_ids))
         filters.append(or_(*arms))
