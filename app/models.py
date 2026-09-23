@@ -146,6 +146,27 @@ class ParserAccount(Base):
     targets: Mapped[list[TargetAccountLink]] = relationship(back_populates="account")
 
 
+class ApiToken(Base):
+    """A bearer token that authenticates as its owner.
+
+    Only the SHA-256 of the token is stored: a database leak must not hand out
+    working credentials, and the raw value is shown once at creation and never
+    again. expires_at NULL means the token never expires.
+    """
+
+    __tablename__ = "api_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(64))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    prefix: Mapped[str] = mapped_column(String(16), index=True)
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC))
+    last_used_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class TargetGroup(Base):
     """A first-class grouping of monitored objects.
 

@@ -152,3 +152,35 @@ def generate_telegram_session_cmd(api_id: int, api_hash: str, phone: str) -> Non
 
 if __name__ == "__main__":
     cli()
+
+
+@cli.command("mint-token")
+@click.option("--username", required=True, help="кому належатиме токен")
+@click.option("--name", default="integration", show_default=True)
+@click.option("--expires-in-days", default=None, type=int, help="за замовчуванням — безстроковий")
+def mint_token_cmd(username: str, name: str, expires_in_days: int | None) -> None:
+    """Print a new API token. It is shown once and cannot be recovered later."""
+    import datetime as dt
+
+    from sqlalchemy import select
+
+    from app.db import SessionLocal
+    from app.models import User
+    from app.services.api_tokens import create_token
+
+    expires_at = None
+    if expires_in_days is not None:
+        expires_at = dt.datetime.now(dt.UTC) + dt.timedelta(days=int(expires_in_days))
+
+    with SessionLocal() as session:
+        user = session.execute(select(User).where(User.username == username)).scalar_one_or_none()
+        if user is None:
+            raise click.ClickException(f"користувача {username!r} не знайдено")
+        token, raw = create_token(session, owner_user_id=int(user.id), name=name, expires_at=expires_at)
+        session.commit()
+        click.echo(raw)
+        click.echo(
+            f"# {token.name} | власник {username} | "
+            f"{'безстроковий' if expires_at is None else expires_at.isoformat()}",
+            err=True,
+        )

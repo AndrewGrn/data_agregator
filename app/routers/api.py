@@ -34,6 +34,7 @@ from app.models import (
     ParserAccount,
     ParserType,
     TargetGroup,
+    ApiToken,
     RawEvent,
     RawEventFile,
     RegistrationToken,
@@ -62,6 +63,7 @@ from app.security import (
     verify_password,
     verify_totp_code,
 )
+from app.services import api_tokens
 from app.services.darknet_profiles import upsert_darknet_profile_from_event
 from app.services.message_search import search_messages
 from app.services.object_store import object_store
@@ -2341,6 +2343,11 @@ class TargetGroupRequest(BaseModel):
     group_id: int | None = None
 
 
+class ApiTokenRequest(BaseModel):
+    name: str = "token"
+    expires_in_days: int | None = None
+
+
 class GroupWriteRequest(BaseModel):
     name: str
     position: int | None = None
@@ -2548,6 +2555,50 @@ def telegram_target_set_group(
         target.group_id = int(payload.group_id)
     db.commit()
     return _telegram_target_row(db, target)
+
+
+def _token_row(token: ApiToken) -> dict:
+    return {
+        "id": int(token.id),
+        "name": token.name,
+        "prefix": token.prefix,
+        "created_at": token.created_at.isoformat() if token.created_at else None,
+        "last_used_at": token.last_used_at.isoformat() if token.last_used_at else None,
+        "expires_at": token.expires_at.isoformat() if token.expires_at else None,
+        "revoked": token.revoked_at is not None,
+    }
+
+
+@router.get("/tokens")
+def api_tokens_list(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    owner = None if _is_admin(user) else int(user.id)
+    return {"tokens": [_token_row(t) for t in api_tokens.list_tokens(db, owner_user_id=owner)]}
+
+
+@router.post("/tokens")
+def api_token_create(payload: ApiTokenRequest, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    """Mint a token. The raw value is in this response and nowhere else."""
+    expires_at = None
+    if payload.expires_in_days is not None:
+        days = int(payload.expires_in_days)
+        if days < 1:
+            raise HTTPException(status_code=400, detail="expires_in_days має бути >= 1")
+        expires_at = dt.datetime.now(dt.UTC) + dt.timedelta(days=days)
+    token, raw = api_tokens.create_token(db, owner_user_id=int(user.id), name=payload.name, expires_at=expires_at)
+    db.commit()
+    return {**_token_row(token), "token": raw}
+
+
+@router.post("/tokens/{token_id}/revoke")
+def api_token_revoke(token_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    token = db.get(ApiToken, int(token_id))
+    if token is None:
+        raise HTTPException(status_code=404, detail="Токен не знайдено")
+    if not _is_admin(user) and int(token.owner_user_id) != int(user.id):
+        raise HTTPException(status_code=403, detail="Немає доступу до цього токена")
+    api_tokens.revoke_token(db, token)
+    db.commit()
+    return _token_row(token)
 
 
 @router.get("/modules/telegram/groups")

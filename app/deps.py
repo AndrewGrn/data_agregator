@@ -5,7 +5,28 @@ from app.db import get_db
 from app.models import User, UserRole
 
 
+def _bearer_token(request: Request) -> str | None:
+    header = request.headers.get("authorization") or ""
+    scheme, _, value = header.partition(" ")
+    if scheme.lower() == "bearer" and value.strip():
+        return value.strip()
+    return None
+
+
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
+    # A bearer token authenticates as its owner without a session, so an
+    # integration does not have to hold a cookie obtained with a one-time 2FA
+    # code. Checked first: when a caller sends a token, a stale cookie must not
+    # silently win.
+    raw_token = _bearer_token(request)
+    if raw_token is not None:
+        from app.services.api_tokens import resolve_token
+
+        user = resolve_token(db, raw_token)
+        if user is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Недійсний токен")
+        return user
+
     user_id = request.session.get("user_id")
     session_version = request.session.get("session_version")
     if not user_id:
