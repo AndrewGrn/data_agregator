@@ -1,4 +1,17 @@
-import { Hash, Users, MessageCircle, Paperclip, Pause, Play, RefreshCw, Repeat, RotateCcw, Trash2 } from "lucide-react";
+import {
+  History,
+  Hash,
+  Users,
+  MessageCircle,
+  Paperclip,
+  Pause,
+  Play,
+  RefreshCw,
+  Repeat,
+  RotateCcw,
+  Trash2,
+  Zap
+} from "lucide-react";
 import { DataRow } from "../ui/data-row";
 import { IconButton } from "../ui/icon-button";
 import { StatusDot } from "../ui/status-dot";
@@ -9,6 +22,7 @@ import {
   retryTelegramOnboarding,
   runTelegramTargetNow,
   startTelegramTarget,
+  setTelegramTargetMode,
   stopTelegramTarget,
   updateTelegramTarget,
   type TelegramTargetRow,
@@ -72,6 +86,15 @@ export function statusOf(row: TelegramTargetRow): { tone: "ok" | "warn" | "bad" 
   return { tone: "ok", text: "Моніториться" };
 }
 
+const BACKFILL_TEXT = { off: "Історія вимк.", running: "Історія йде", queued: "Історія в черзі", done: "Історія зібрана" } as const;
+const BACKFILL_TONE = { off: "muted", running: "info", queued: "warn", done: "ok" } as const;
+const BACKFILL_TITLE = {
+  off: "Збір історії вимкнено — беремо лише нові повідомлення",
+  running: "Читаємо історію каналу просто зараз",
+  queued: "Чекає вільний слот: один акаунт тягне одну історію за раз",
+  done: "Історію зібрано повністю, далі лише нові повідомлення"
+} as const;
+
 export function TargetRow({
   row,
   onChanged,
@@ -84,6 +107,8 @@ export function TargetRow({
   const Icon = row.kind ? KIND_ICON[row.kind] : Hash;
   const status = statusOf(row);
   const inProgress = ["queued", "resolving", "joining"].includes(row.onboarding_step);
+  // Mode only means anything once the object is actually attached to an account.
+  const collecting = row.is_active && row.onboarding_status === "ready" && Boolean(row.account);
 
   const act = async (fn: () => Promise<unknown>) => {
     await fn();
@@ -109,6 +134,16 @@ export function TargetRow({
           <span title={status.title}>
             <StatusPill tone={status.tone}>{status.text}</StatusPill>
           </span>
+          {collecting ? (
+            <>
+              <span title={row.live_enabled ? "Реалтайм увімкнено: повідомлення приходять одразу" : "Реалтайм вимкнено"}>
+                <StatusPill tone={row.live_enabled ? "ok" : "muted"}>Live</StatusPill>
+              </span>
+              <span title={BACKFILL_TITLE[row.backfill_state]}>
+                <StatusPill tone={BACKFILL_TONE[row.backfill_state]}>{BACKFILL_TEXT[row.backfill_state]}</StatusPill>
+              </span>
+            </>
+          ) : null}
           {row.account ? (
             <span className="inline-flex items-center gap-1.5 text-sm">
               <StatusDot tone={row.account.alive === false ? "bad" : row.account.alive ? "ok" : "muted"} />
@@ -132,6 +167,24 @@ export function TargetRow({
             onClick={() => act(() => (row.is_active ? stopTelegramTarget(row.id) : startTelegramTarget(row.id)))}
             disabled={inProgress}
           />
+          {collecting && (
+            <>
+              <IconButton
+                label={row.live_enabled ? "Реалтайм увімкнено — вимкнути" : "Реалтайм вимкнено — увімкнути"}
+                icon={Zap}
+                variant={row.live_enabled ? "outline" : "ghost"}
+                onClick={() => act(() => setTelegramTargetMode(row.id, { live_enabled: !row.live_enabled }))}
+              />
+              <IconButton
+                label={row.backfill_state === "off" ? "Збір історії вимкнено — увімкнути" : "Збір історії увімкнено — вимкнути"}
+                icon={History}
+                variant={row.backfill_state === "off" ? "ghost" : "outline"}
+                onClick={() =>
+                  act(() => setTelegramTargetMode(row.id, { backfill_enabled: row.backfill_state === "off" }))
+                }
+              />
+            </>
+          )}
           <IconButton
             label={row.media_enabled ? "Медіа: вкл. Вимкнути завантаження файлів" : "Медіа: вимк. Завантажувати файли"}
             icon={Paperclip}

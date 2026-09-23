@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.deps import get_current_user, get_db
 from app.main import app
-from app.models import JobStatus, ParseJob, ParserAccount, Target, TargetAccountLink, User
+from app.models import JobStatus, OnboardingStatus, ParseJob, ParserAccount, Target, TargetAccountLink, User
 
 pytestmark = pytest.mark.postgres
 
@@ -575,3 +575,72 @@ def test_group_name_is_capped_and_not_shared_across_users(client, pg_session):
         id=99, is_admin=False, role="user", is_active=True
     )
     assert c.post(f"/api/modules/telegram/targets/{row['id']}/group", json={"group_name": "чуже"}).status_code == 403
+
+
+def _ready_target(session, *, backfill_enabled=True):
+    acc = _account(session)
+    t = Target(parser_type="telegram", name="c", identifier="@c", is_active=True,
+               onboarding_step="joined", onboarding_status=OnboardingStatus.ready,
+               config={"live_enabled": True, "backfill": {"enabled": backfill_enabled, "mode": "full"}})
+    session.add(t); session.commit()
+    session.add(TargetAccountLink(target_id=t.id, account_id=acc.id, is_active=True))
+    session.commit()
+    return t
+
+
+def test_row_reports_what_collection_is_actually_doing(client):
+    """'Моніториться' plus an event count said nothing about live vs history."""
+    import datetime as dt
+
+    c, session, _ = client
+    t = _ready_target(session)
+
+    def row():
+        return next(r for r in c.get("/api/modules/telegram").json()["targets"] if r["id"] == t.id)
+
+    assert row()["live_enabled"] is True
+    assert row()["backfill_state"] == "queued", "enabled, nothing finished yet"
+
+    job = ParseJob(parser_type="telegram", target_id=t.id, job_key=f"backfill-full:{t.id}:1:0",
+                   payload={}, queue="telegram_backfill", status=JobStatus.running,
+                   run_after=dt.datetime.now(dt.UTC))
+    session.add(job); session.commit()
+    assert row()["backfill_state"] == "running"
+
+    job.status = JobStatus.succeeded
+    t.config = {**t.config, "backfill": {**t.config["backfill"], "full_progress": {"1": {"done": True}}}}
+    session.commit()
+    assert row()["backfill_state"] == "done"
+
+
+def test_mode_toggles_live_and_backfill_without_losing_progress(client):
+    c, session, _ = client
+    t = _ready_target(session)
+    t.config = {**t.config, "kind": "channel",
+                "backfill": {**t.config["backfill"], "full_progress": {"1": {"next_offset_id": 500}}}}
+    session.commit()
+
+    off = c.post(f"/api/modules/telegram/targets/{t.id}/mode", json={"backfill_enabled": False})
+    assert off.status_code == 200 and off.json()["backfill_state"] == "off"
+    assert off.json()["live_enabled"] is True, "live untouched"
+
+    live_off = c.post(f"/api/modules/telegram/targets/{t.id}/mode", json={"live_enabled": False})
+    assert live_off.json()["live_enabled"] is False
+
+    c.post(f"/api/modules/telegram/targets/{t.id}/mode", json={"backfill_enabled": True})
+    session.refresh(t)
+    assert t.config["backfill"]["full_progress"]["1"]["next_offset_id"] == 500, "resumes, not restarts"
+    assert t.config["kind"] == "channel", "unrelated config preserved"
+
+
+def test_mode_is_forbidden_for_another_users_target(client, pg_session):
+    c, session, _ = client
+    t = _ready_target(session)
+    other = User(username="other2", password_hash="x", role="user", is_active=True)
+    session.add(other); session.commit()
+    t.owner_user_id = int(other.id); session.commit()
+
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+        id=98, is_admin=False, role="user", is_active=True
+    )
+    assert c.post(f"/api/modules/telegram/targets/{t.id}/mode", json={"live_enabled": False}).status_code == 403

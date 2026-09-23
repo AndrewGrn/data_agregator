@@ -482,6 +482,33 @@ def _active_account_for(db: Session, target_id: int) -> ParserAccount | None:
     ).scalar_one_or_none()
 
 
+def _telegram_backfill_state(db: Session, target: Target) -> str:
+    """What the backfill is doing right now: off / running / queued / done.
+
+    'Моніториться' alone said nothing about whether a channel was actually being
+    collected, and a backfill waiting behind another channel (one per account)
+    looked identical to one that had finished.
+    """
+    config = dict(target.config or {})
+    if not bool((config.get("backfill") or {}).get("enabled")):
+        return "off"
+    job = db.execute(
+        select(ParseJob.status).where(
+            ParseJob.target_id == target.id,
+            ParseJob.job_key.like("backfill%"),
+            ParseJob.status.in_([JobStatus.running, JobStatus.pending, JobStatus.retry]),
+        ).order_by(ParseJob.status == JobStatus.running).limit(1)
+    ).scalar_one_or_none()
+    if job == JobStatus.running:
+        return "running"
+    if job is not None:
+        return "queued"
+    progress = ((config.get("backfill") or {}).get("full_progress") or {})
+    if any(bool(state.get("done")) for state in progress.values() if isinstance(state, dict)):
+        return "done"
+    return "queued"
+
+
 def _telegram_target_row(
     db: Session, target: Target, *, events_count: int = 0, last_event_at: dt.datetime | None = None
 ) -> dict:
@@ -501,6 +528,8 @@ def _telegram_target_row(
         "identifier": target.identifier,
         "kind": (target.config or {}).get("kind"),
         "group_name": target.group_name,
+        "live_enabled": bool((target.config or {}).get("live_enabled", True)),
+        "backfill_state": _telegram_backfill_state(db, target),
         "media_enabled": bool((target.config or {}).get("media_enabled", False)),
         "is_active": bool(target.is_active),
         "onboarding_status": target.onboarding_status.value if target.onboarding_status else "ready",
@@ -2302,6 +2331,11 @@ class TargetGroupRequest(BaseModel):
     group_name: str | None = None
 
 
+class TargetModeRequest(BaseModel):
+    live_enabled: bool | None = None
+    backfill_enabled: bool | None = None
+
+
 @router.post("/modules/telegram/onboard")
 def telegram_onboard(payload: OnboardRequest, db: Session = Depends(get_db), user=Depends(get_current_user)):
     if not str(payload.input or "").strip():
@@ -2453,6 +2487,32 @@ def telegram_target_reassign(
 def telegram_target_retry_onboarding(target_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
     target = _ensure_target_access(db.get(Target, int(target_id)), user)
     telegram_onboarding.onboard(db, raw_input=target.identifier, owner_user_id=target.owner_user_id, allow_join=True)
+    db.commit()
+    return _telegram_target_row(db, target)
+
+
+@router.post("/modules/telegram/targets/{target_id}/mode")
+def telegram_target_set_mode(
+    target_id: int, payload: TargetModeRequest, db: Session = Depends(get_db), user=Depends(get_current_user)
+):
+    """Turn realtime and/or backfill on or off for one object.
+
+    Only the named flags change: the rest of the config (kind, quiet_until,
+    backfill progress) is preserved, so toggling backfill off and on again
+    resumes where it stopped instead of re-reading the whole history.
+    """
+    target = _ensure_target_access(db.get(Target, int(target_id)), user)
+    if target.parser_type != ParserType.telegram:
+        raise HTTPException(status_code=404, detail="Telegram ціль не знайдена")
+
+    config = dict(target.config or {})
+    if payload.live_enabled is not None:
+        config["live_enabled"] = bool(payload.live_enabled)
+    if payload.backfill_enabled is not None:
+        backfill = dict(config.get("backfill") or {})
+        backfill["enabled"] = bool(payload.backfill_enabled)
+        config["backfill"] = backfill
+    target.config = config
     db.commit()
     return _telegram_target_row(db, target)
 

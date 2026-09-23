@@ -9,6 +9,9 @@ export interface TelegramTargetRow {
   identifier: string;
   kind: TargetKind;
   group_name: string | null;
+  live_enabled: boolean;
+  /** off = backfill disabled; queued = waiting for a free slot (one per account) */
+  backfill_state: "off" | "running" | "queued" | "done";
   media_enabled: boolean;
   is_active: boolean;
   onboarding_status: "ready" | "needs_account" | "blocked";
@@ -63,6 +66,11 @@ export function onboardTelegramTarget(
   opts: { account_id?: number; allow_join?: boolean; group_name?: string } = {}
 ) {
   return apiPost<TelegramTargetRow>(`${BASE}/onboard`, { input, ...opts });
+}
+
+/** Turn realtime and/or history collection on or off for one object. */
+export function setTelegramTargetMode(id: number, mode: { live_enabled?: boolean; backfill_enabled?: boolean }) {
+  return apiPost<TelegramTargetRow>(`${BASE}/targets/${id}/mode`, mode);
 }
 
 /** Move a target into a group. Pass null to take it out of every group. */
