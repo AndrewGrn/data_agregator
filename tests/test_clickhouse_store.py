@@ -143,3 +143,32 @@ def test_build_search_sql_binds_parameters_never_interpolates():
     assert "OR 1=1" not in sql and params["q"] == "a' OR 1=1 --"
     assert "{q:String}" in sql and "{limit_plus:UInt32}" in sql
     assert "text_lower" in sql, "word search must run against the lowercased column"
+
+
+def test_backfill_splits_inserts_by_month(ch_client):
+    """Regression: the table is PARTITION BY toYYYYMM(observed_at) and ClickHouse rejects an
+    insert block touching more than 100 partitions. An id-ordered batch of a channel with a
+    decade of history (e.g. @durov, back to 2015) blows straight through that."""
+    from app.db import Base
+    from app.models import RawEvent, Target
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    target = Target(parser_type="telegram", name="c", identifier="@c", config={})
+    session.add(target); session.commit()
+
+    base = dt.datetime(2015, 1, 15, tzinfo=dt.UTC)
+    session.add_all([
+        RawEvent(parser_type="telegram", target_id=target.id, external_id=str(i), payload={},
+                 text=f"msg {i}", observed_at=base + dt.timedelta(days=31 * i), event_kind="message")
+        for i in range(130)  # 130 distinct months, well over the 100-partition limit
+    ])
+    session.commit()
+
+    assert store.backfill_from_postgres(session, batch_size=5000, client=ch_client) == 130
+    assert int(ch_client.command(f"SELECT count() FROM {store.EVENTS_TABLE} FINAL")) == 130
+    assert int(ch_client.command(f"SELECT uniq(toYYYYMM(observed_at)) FROM {store.EVENTS_TABLE}")) == 130
+    session.close()

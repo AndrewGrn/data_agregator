@@ -329,6 +329,14 @@ async def get_event(client, *, parser_type: str, target_id: int, event_key: str,
     return d
 
 
+def _group_by_month(rows: list[dict]) -> dict[str, list[dict]]:
+    """Split rows by the table's partition key so no insert block spans >100 partitions."""
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        groups.setdefault(row["observed_at"].strftime("%Y%m"), []).append(row)
+    return groups
+
+
 def backfill_from_postgres(session: Session, *, batch_size: int = 5000, client=None) -> int:
     """Stream raw_events into ClickHouse in id order. Idempotent."""
     client = client or get_sync_client()
@@ -342,7 +350,12 @@ def backfill_from_postgres(session: Session, *, batch_size: int = 5000, client=N
             break
         rows = rows_from_raw_events(batch)
         # Bulk path: 5000-row batches are already the right part size, no async_insert needed.
-        client.insert(EVENTS_TABLE, [[row[c] for c in _COLUMNS] for row in rows], column_names=_COLUMNS)
+        # One insert per month, because the table is PARTITION BY toYYYYMM(observed_at) and
+        # ClickHouse refuses a block touching more than max_partitions_per_insert_block (100)
+        # partitions. Rows arrive in id order, so a single batch of a channel with a decade of
+        # history spans well over 100 months — @durov alone reaches back to 2015.
+        for _, group in sorted(_group_by_month(rows).items()):
+            client.insert(EVENTS_TABLE, [[row[c] for c in _COLUMNS] for row in group], column_names=_COLUMNS)
         total += len(rows); last_id = int(batch[-1].id)
         logger.info("ch-backfill: %d rows so far (last id %d)", total, last_id)
     return total
