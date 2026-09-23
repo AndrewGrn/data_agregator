@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.deps import get_current_user, get_db
 from app.main import app
-from app.models import ParseJob, ParserAccount, Target, TargetAccountLink, User
+from app.models import JobStatus, ParseJob, ParserAccount, Target, TargetAccountLink, User
 
 pytestmark = pytest.mark.postgres
 
@@ -502,3 +502,31 @@ def test_media_is_off_by_default_and_toggles_per_target(client):
 
     rows = c.get("/api/modules/telegram").json()["targets"]
     assert next(r for r in rows if r["id"] == row["id"])["media_enabled"] is True
+
+
+def test_queued_row_exposes_why_and_when_it_will_retry(client):
+    """A row parked on "У черзі" must carry the reason and the next attempt time,
+    otherwise the user cannot tell waiting from stuck."""
+    import datetime as dt
+
+    c, session, _ = client
+    row = c.post("/api/modules/telegram/onboard", json={"input": "@durov"}).json()
+    target = session.get(Target, row["id"])
+    target.onboarding_error = "Черга на вступ: акаунт «test» вступає не частіше ніж раз на 15 хв"
+    session.commit()
+
+    job = session.execute(select(ParseJob).where(ParseJob.job_key == f"onboard:{target.id}")).scalar_one()
+    job.status = JobStatus.retry
+    job.run_after = dt.datetime.now(dt.UTC) + dt.timedelta(minutes=13)
+    session.commit()
+
+    rows = c.get("/api/modules/telegram").json()["targets"]
+    fresh = next(r for r in rows if r["id"] == target.id)
+    assert fresh["onboarding_retry_at"] is not None
+    assert "Черга на вступ" in fresh["onboarding_error"]
+
+    # a target with no pending onboard job reports no retry time
+    job.status = JobStatus.succeeded
+    session.commit()
+    rows = c.get("/api/modules/telegram").json()["targets"]
+    assert next(r for r in rows if r["id"] == target.id)["onboarding_retry_at"] is None

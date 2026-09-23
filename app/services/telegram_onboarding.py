@@ -234,8 +234,20 @@ def pool_retry_wait_seconds(session: Session, *, now: dt.datetime) -> int:
     return min(waits) if waits else 0
 
 
+def is_private_identifier(identifier: str) -> bool:
+    """A bare -100<id>: a private channel/supergroup with no username and no invite.
+
+    Nothing can be joined by such an id — only an account already inside resolves it.
+    """
+    value = str(identifier or "")
+    return value.startswith("-100") and value[1:].isdigit()
+
+
 def pick_account(session: Session, target: Target, *, now: dt.datetime) -> ParserAccount | None:
-    """Prefer an account that is already a member; otherwise the least loaded."""
+    """Prefer an account that is already a member; otherwise the least loaded.
+
+    For a private chat membership is not a preference but a requirement.
+    """
     # ponytail: this SELECT has no FOR UPDATE, so two worker processes can both
     # score the same "least loaded" account and both hand it to a target in the
     # same instant (the later lock_account_for_pacing() only serializes the
@@ -250,6 +262,8 @@ def pick_account(session: Session, target: Target, *, now: dt.datetime) -> Parse
         )
     ).scalars().all()
     candidates = [a for a in accounts if _available(a, now)]
+    if is_private_identifier(target.identifier):
+        candidates = [a for a in candidates if _is_member(a, target.identifier)]
     if not candidates:
         return None
 
@@ -451,16 +465,33 @@ def run_onboard_job(
             return
     else:
         account = pick_account(session, target, now=now)
+        if account is None and is_private_identifier(target.identifier):
+            # pick_account() requires membership for a private chat, so "no candidate"
+            # here means nobody is inside — a wait would never change that.
+            _fail(
+                target,
+                "Приватний чат: жоден акаунт пулу не є його учасником. "
+                "Додайте виділений акаунт, який уже в чаті, і призначте його вручну.",
+            )
+            return
         if account is None:
             wait = pool_retry_wait_seconds(session, now=now)
             if wait > 0:
                 target.onboarding_step = "queued"
+                target.onboarding_error = f"Усі акаунти пулу на паузі, повтор через {max(wait // 60, 1)} хв"
                 raise DeferJob(seconds=min(wait, 3600), reason="усі акаунти пулу на паузі (cooldown)")
             _fail(target, "немає доступних акаунтів пулу")
             return
 
     already_member = _is_member(account, target.identifier)
     needs_join = not already_member
+
+    if needs_join and is_private_identifier(target.identifier):
+        # Reached when an account was pinned by hand. Joining is impossible for a bare
+        # -100 id, and merely trying would consume one of the account's 10 daily join
+        # slots (900s apart) before failing anyway.
+        _fail(target, f"Акаунт «{account.label}» не є учасником цього приватного чату")
+        return
 
     if needs_join and not allow_join:
         _fail(target, "акаунт не є учасником, а вступ заборонено")
@@ -470,6 +501,13 @@ def run_onboard_job(
         lock_account_for_pacing(session, account)
         wait = join_pacing_wait_seconds(account, now)
         if wait > 0:
+            # The UI shows onboarding_error under the status, so a wait must be
+            # readable there instead of leaving the row on a bare "У черзі".
+            target.onboarding_error = (
+                f"Черга на вступ: акаунт «{account.label}» вступає не частіше ніж раз на "
+                f"{int(settings.telegram_join_min_gap_seconds) // 60} хв "
+                f"({account.join_window_count}/{int(settings.telegram_join_daily_limit)} за добу)"
+            )
             raise DeferJob(seconds=wait, reason=f"join pacing on account #{account.id}")
 
     target.onboarding_step = "joining" if needs_join else "resolving"

@@ -13,6 +13,7 @@ export interface TelegramTargetRow {
   onboarding_status: "ready" | "needs_account" | "blocked";
   onboarding_step: OnboardingStep;
   onboarding_error: string | null;
+  onboarding_retry_at: string | null;
   account: { id: number; label: string; alive: boolean | null } | null;
   events_count: number;
   last_event_at: string | null;

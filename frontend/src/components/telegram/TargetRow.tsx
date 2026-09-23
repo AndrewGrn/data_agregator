@@ -27,14 +27,28 @@ function relative(iso: string | null): string {
   return `${Math.floor(h / 24)} д тому`;
 }
 
+function inMinutes(iso: string | null): string {
+  if (!iso) return "";
+  const m = Math.round((new Date(iso).getTime() - Date.now()) / 60000);
+  if (m <= 0) return "ось-ось";
+  return m < 60 ? `через ${m} хв` : `через ${Math.round(m / 60)} год`;
+}
+
 export function statusOf(row: TelegramTargetRow): { tone: "ok" | "warn" | "bad" | "muted" | "info"; text: string; title?: string } {
   if (!row.is_active) return { tone: "muted", text: "Пауза" };
   switch (row.onboarding_step) {
     case "queued":
-    case "resolving":
-      return { tone: "info", text: "У черзі" };
+    case "resolving": {
+      // "У черзі" on its own tells the user nothing: show why and when.
+      const when = inMinutes(row.onboarding_retry_at);
+      return {
+        tone: "info",
+        text: when ? `У черзі, ${when}` : "У черзі",
+        title: row.onboarding_error ?? "Очікує вільний акаунт",
+      };
+    }
     case "joining":
-      return { tone: "info", text: "Вступає" };
+      return { tone: "info", text: "Вступає", title: row.onboarding_error ?? undefined };
     case "failed":
       return { tone: "bad", text: "Помилка", title: row.onboarding_error ?? undefined };
     case "pending_approval":

@@ -486,6 +486,15 @@ def _telegram_target_row(
     db: Session, target: Target, *, events_count: int = 0, last_event_at: dt.datetime | None = None
 ) -> dict:
     account = _active_account_for(db, target.id)
+    # A target parked on "У черзі" is waiting on a specific job; without its next
+    # run time the row gives the user no idea whether to wait or to act.
+    retry_at = db.scalar(
+        select(ParseJob.run_after).where(
+            ParseJob.target_id == target.id,
+            ParseJob.job_key == f"onboard:{target.id}",
+            ParseJob.status.in_([JobStatus.pending, JobStatus.retry]),
+        ).order_by(ParseJob.run_after).limit(1)
+    )
     return {
         "id": int(target.id),
         "name": target.name,
@@ -496,6 +505,7 @@ def _telegram_target_row(
         "onboarding_status": target.onboarding_status.value if target.onboarding_status else "ready",
         "onboarding_step": target.onboarding_step or "idle",
         "onboarding_error": target.onboarding_error,
+        "onboarding_retry_at": retry_at.isoformat() if retry_at else None,
         "account": {"id": int(account.id), "label": account.label, "alive": account.alive} if account else None,
         "events_count": int(events_count),
         "last_event_at": last_event_at.isoformat() if last_event_at else None,

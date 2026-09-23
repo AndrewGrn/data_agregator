@@ -511,6 +511,7 @@ def test_private_link_nobody_is_in_fails_with_a_human_message():
     onb.run_onboard_job(session, job, target, client_factory=lambda acc: client)
     session.commit()
 
+    assert client.calls == [], "nobody is inside: do not spend a request finding out"
     assert target.onboarding_step == "failed"
     assert target.onboarding_status.value == "needs_account"
     assert target.onboarding_error.startswith("Приватний чат")
@@ -523,6 +524,11 @@ def test_private_id_resolves_after_walking_dialogs_for_a_member_account():
     bare id until the dialogs were listed once)."""
     session = _session()
     target, job = _queued(session, identifier="https://t.me/c/2707984934/1393921")
+    # the pool account is inside the chat; only its Telethon session has not met it yet
+    acc = session.execute(select(ParserAccount)).scalar_one()
+    acc.credentials = {**acc.credentials,
+                       "dialogs_cache": [{"identifier": "-1002707984934", "dialog_id": "-1002707984934", "title": "Private"}]}
+    session.commit()
 
     class _Member(_FakeClient):
         def __init__(self):
@@ -545,6 +551,7 @@ def test_private_id_resolves_after_walking_dialogs_for_a_member_account():
 
     assert client.dialogs_walked
     assert client.calls.count("get_entity:-1002707984934") == 2
+    assert "JoinChannelRequest" not in client.calls, "already a member: resolve, never join"
     assert target.onboarding_step == "joined"
     assert target.identifier == "-1002707984934"
     assert target.name == "Private"
@@ -588,3 +595,64 @@ def test_dead_account_is_still_excluded_regardless_of_health():
     session.commit()
 
     assert onb.pick_account(session, target, now=dt.datetime.now(dt.UTC)) is None
+
+
+def test_private_chat_fails_immediately_without_burning_a_join_slot():
+    """Regression: six private channels whose only member account had died sat on
+    'У черзі' for a day. Each retry waited 15 min for a join slot, then tried a join
+    that CANNOT work (a bare -100 id has no username and no invite), so the pool's
+    10 daily joins were spent on guaranteed failures."""
+    session = _session()
+    target, job = _queued(session, identifier="-1001338286165")
+    acc = session.execute(select(ParserAccount)).scalar_one()
+    acc.last_join_at = dt.datetime.now(dt.UTC)  # a join slot would otherwise be due in 15 min
+    session.commit()
+    client = _FakeClient()
+
+    onb.run_onboard_job(session, job, target, client_factory=lambda a: client)
+    session.commit()
+
+    assert client.calls == [], "must not touch Telegram at all"
+    assert target.onboarding_step == "failed"
+    assert target.onboarding_error.startswith("Приватний чат")
+    session.refresh(acc)
+    assert acc.join_window_count == 0, "no join slot consumed"
+
+
+def test_private_chat_picks_the_member_account_even_if_busier():
+    session = _session()
+    _account(session, "outsider", health=100.0)
+    member = _account(session, "insider", health=10.0,
+                      dialogs=[{"identifier": "-1001338286165", "dialog_id": "-1001338286165", "title": "ЖК"}])
+    target = Target(parser_type="telegram", name="ЖК", identifier="-1001338286165")
+    session.add(target)
+    session.commit()
+
+    assert onb.pick_account(session, target, now=dt.datetime.now(dt.UTC)).id == member.id
+
+
+def test_public_channel_is_unaffected_by_the_private_rule():
+    session = _session()
+    target, job = _queued(session, identifier="@durov")
+    client = _FakeClient()
+
+    onb.run_onboard_job(session, job, target, client_factory=lambda a: client)
+    session.commit()
+
+    assert "JoinChannelRequest" in client.calls
+    assert target.onboarding_step == "joined"
+
+
+def test_join_pacing_wait_is_explained_in_the_row():
+    """A deferral must leave a human reason where the UI shows it."""
+    session = _session()
+    target, job = _queued(session)
+    acc = session.execute(select(ParserAccount)).scalar_one()
+    acc.last_join_at = dt.datetime.now(dt.UTC)
+    session.commit()
+
+    with pytest.raises(DeferJob):
+        onb.run_onboard_job(session, job, target, client_factory=lambda a: _FakeClient())
+
+    assert "Черга на вступ" in target.onboarding_error
+    assert "хв" in target.onboarding_error
