@@ -92,7 +92,9 @@ services:
       - "127.0.0.1:${TOR_PORT:-9050}:9050"
 
   minio:
-    image: minio/minio:latest
+    # MinIO no longer publishes to Docker Hub — docker.io/minio/minio returns
+    # "pull access denied" even with a valid token. quay.io is their registry.
+    image: quay.io/minio/minio:latest
     environment:
       MINIO_ROOT_USER: minio
       MINIO_ROOT_PASSWORD: miniosecret
