@@ -150,3 +150,14 @@ def test_last_used_is_recorded_for_audit(anon):
     c.get("/api/search/status", headers={"Authorization": f"Bearer {raw}"})
     session.expire_all()
     assert session.get(ApiToken, token.id).last_used_at is not None
+
+
+def test_every_cli_command_is_registered():
+    """Regression: mint-token was declared after `if __name__ == "__main__": cli()`,
+    so `python -m app.cli` ran the group before the decorator had registered it and
+    the command simply did not exist."""
+    from app.cli import cli
+
+    names = set(cli.commands)
+    assert "mint-token" in names
+    assert {"db-upgrade", "run-worker", "ch-backfill"} <= names, "existing commands still registered"

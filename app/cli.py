@@ -150,8 +150,6 @@ def generate_telegram_session_cmd(api_id: int, api_hash: str, phone: str) -> Non
     asyncio.run(_run())
 
 
-if __name__ == "__main__":
-    cli()
 
 
 @cli.command("mint-token")
@@ -184,3 +182,7 @@ def mint_token_cmd(username: str, name: str, expires_in_days: int | None) -> Non
             f"{'безстроковий' if expires_at is None else expires_at.isoformat()}",
             err=True,
         )
+
+
+if __name__ == "__main__":
+    cli()
