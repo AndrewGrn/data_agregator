@@ -202,8 +202,9 @@ class TelegramPlugin(ParserPlugin):
             return False
         if account.cooldown_until and account.cooldown_until > now:
             return False
-        if account.health_score < 20:
-            return False
+        # No health_score gate here either: it only recovers on a successful job,
+        # so gating on it makes a temporarily unlucky account permanently unusable.
+        # cooldown_until throttles and alive=False kills; health_score ranks below.
 
         if account.hour_window_start and (now - account.hour_window_start) < dt.timedelta(hours=1):
             return account.hour_window_count < max(account.hourly_limit, 1)

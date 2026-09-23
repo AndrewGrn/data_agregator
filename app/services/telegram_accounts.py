@@ -78,6 +78,11 @@ def compute_account_load_score(account, queued_jobs: int, now: dt.datetime) -> f
     hour_count = int(getattr(account, "hour_window_count", 0) or 0)
     health = float(getattr(account, "health_score", 100.0) or 0.0)
     cooldown_until = getattr(account, "cooldown_until", None)
+    if cooldown_until is not None and cooldown_until.tzinfo is None:
+        # SQLite drops tzinfo on DateTime(timezone=True) round-trips; Postgres keeps it.
+        # Comparing the two shapes raises TypeError, which only surfaced once accounts
+        # with an expired cooldown started reaching the ranking step.
+        cooldown_until = cooldown_until.replace(tzinfo=dt.UTC)
     in_cooldown = bool(cooldown_until and cooldown_until > now)
 
     utilization = min(hour_count / hourly_limit, 2.0)

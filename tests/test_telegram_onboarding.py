@@ -548,3 +548,43 @@ def test_private_id_resolves_after_walking_dialogs_for_a_member_account():
     assert target.onboarding_step == "joined"
     assert target.identifier == "-1002707984934"
     assert target.name == "Private"
+
+
+def test_low_health_account_is_still_usable_once_its_cooldown_expires():
+    """Regression: health_score only grows in _register_account_success(), which needs a
+    job to run, which needed the account to pass this very check. A run of network blips
+    (-8 each) drove a live account to 4 and every target sat on "У черзі" forever."""
+    session = _session()
+    acc = _account(session, "battered", health=4.0)
+    acc.cooldown_until = dt.datetime.now(dt.UTC) - dt.timedelta(minutes=1)  # served
+    session.commit()
+    target = Target(parser_type="telegram", name="d", identifier="@durov")
+    session.add(target)
+    session.commit()
+
+    assert onb.pick_account(session, target, now=dt.datetime.now(dt.UTC)).id == acc.id
+
+
+def test_cooldown_still_blocks_and_is_reported_as_a_wait():
+    session = _session()
+    acc = _account(session, "cooling", health=100.0)
+    acc.cooldown_until = dt.datetime.now(dt.UTC) + dt.timedelta(minutes=5)
+    session.commit()
+    target = Target(parser_type="telegram", name="d", identifier="@durov")
+    session.add(target)
+    session.commit()
+    now = dt.datetime.now(dt.UTC)
+
+    assert onb.pick_account(session, target, now=now) is None
+    assert 250 < onb.pool_retry_wait_seconds(session, now=now) <= 301
+
+
+def test_dead_account_is_still_excluded_regardless_of_health():
+    """alive=False remains the kill switch."""
+    session = _session()
+    _account(session, "dead", alive=False, health=100.0)
+    target = Target(parser_type="telegram", name="d", identifier="@durov")
+    session.add(target)
+    session.commit()
+
+    assert onb.pick_account(session, target, now=dt.datetime.now(dt.UTC)) is None

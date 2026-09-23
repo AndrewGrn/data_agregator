@@ -201,8 +201,12 @@ def _available(account: ParserAccount, now: dt.datetime) -> bool:
     cooldown_until = _aware(account.cooldown_until)
     if cooldown_until and cooldown_until > now:
         return False
-    if account.health_score < 20:
-        return False
+    # Deliberately NOT gated on health_score. health_score only ever recovers via
+    # _register_account_success(), which needs a job to run, which needed the
+    # account to be available — a run of network blips drove it under 20 and the
+    # account was locked out for good, with every target stuck on "У черзі".
+    # The real throttle is cooldown_until (exponential backoff per failure) and
+    # the real kill switch is alive=False from the liveness checker.
     return True
 
 
@@ -227,8 +231,6 @@ def pool_retry_wait_seconds(session: Session, *, now: dt.datetime) -> int:
         cooldown_until = _aware(a.cooldown_until)
         if cooldown_until and cooldown_until > now:
             waits.append(int((cooldown_until - now).total_seconds()) + 1)
-        elif a.health_score < 20:
-            waits.append(600)  # health only recovers via successful jobs elsewhere
     return min(waits) if waits else 0
 
 
