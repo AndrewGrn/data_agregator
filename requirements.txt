@@ -21,3 +21,4 @@ beautifulsoup4==4.13.4
 nats-py==2.7.2
 pytest==8.4.1
 httpx==0.28.1
+clickhouse-connect[async]==1.9.0

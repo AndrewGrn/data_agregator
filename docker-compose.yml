@@ -55,6 +55,22 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-aggregator}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    ports:
+      - "127.0.0.1:8123:8123"  # HTTP only; native 9000 would collide with MinIO
+    volumes:
+      - chdata:/var/lib/clickhouse
+
   nats:
     image: nats:2.10-alpine
     command:
@@ -300,6 +316,7 @@ services:
 
 volumes:
   pgdata:
+  chdata:
   nats_data:
   minio_data:
   raw_data:

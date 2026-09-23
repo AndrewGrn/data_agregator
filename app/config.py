@@ -84,6 +84,13 @@ class Settings(BaseSettings):
     s3_region: str = "us-east-1"
     s3_use_ssl: bool = False
     media_max_bytes: int = 52428800  # 50 MB
+    # Events analytics store (see docs/superpowers/specs/2026-09-23-clickhouse-events-design.md).
+    clickhouse_enabled: bool = True
+    clickhouse_host: str = "clickhouse"
+    clickhouse_port: int = 8123
+    clickhouse_user: str = "default"
+    clickhouse_password: str = ""
+    clickhouse_database: str = "aggregator"
     wa_stream: str = "WA_EVENTS"
     wa_durable: str = "wa-listener"
 
