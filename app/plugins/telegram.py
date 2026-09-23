@@ -289,6 +289,28 @@ class TelegramPlugin(ParserPlugin):
 
         if not rows:
             target.onboarding_status = OnboardingStatus.needs_account
+            # An active target with no account and no onboarding job is a dead end:
+            # the scheduler would re-flag it every tick forever and nothing would
+            # ever pick it up. Targets that predate auto-onboarding sit exactly
+            # here. Only "idle" is auto-started: a "failed" step means onboarding
+            # already ran and reached a verdict (e.g. a private chat nobody is in),
+            # and re-queueing that would loop and burn join slots — the user
+            # restarts it with the retry button.
+            if (target.onboarding_step or "idle") == "idle":
+                target.onboarding_step = "queued"
+                target.onboarding_error = None
+                return [
+                    JobSpec(
+                        parser_type=self.parser_type,
+                        target_id=target.id,
+                        account_id=None,
+                        job_key=f"onboard:{target.id}",
+                        payload={"mode": "onboard", "allow_join": True},
+                        priority=40,
+                        queue="telegram_backfill",
+                        max_attempts=20,
+                    )
+                ]
             return []
 
         now = dt.datetime.now(dt.UTC)

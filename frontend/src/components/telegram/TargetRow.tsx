@@ -54,8 +54,20 @@ export function statusOf(row: TelegramTargetRow): { tone: "ok" | "warn" | "bad" 
     case "pending_approval":
       return { tone: "warn", text: "Очікує схвалення", title: row.onboarding_error ?? undefined };
   }
-  if (row.onboarding_status === "needs_account") return { tone: "warn", text: "Чекає акаунт" };
-  if (row.onboarding_status === "blocked") return { tone: "warn", text: "Акаунти недоступні" };
+  if (row.onboarding_status === "needs_account") {
+    const when = inMinutes(row.onboarding_retry_at);
+    return {
+      tone: "warn",
+      text: when ? `Чекає акаунт, ${when}` : "Чекає акаунт",
+      title: row.onboarding_error ?? "Жоден акаунт ще не закріплений за цим об'єктом",
+    };
+  }
+  if (row.onboarding_status === "blocked")
+    return {
+      tone: "warn",
+      text: "Акаунти недоступні",
+      title: row.onboarding_error ?? "Усі акаунти пулу мертві, на паузі або вичерпали ліміт",
+    };
   if (row.account && row.account.alive === false) return { tone: "bad", text: "Акаунт мертвий" };
   return { tone: "ok", text: "Моніториться" };
 }
