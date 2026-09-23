@@ -159,6 +159,8 @@ class Target(Base):
     onboarding_status: Mapped[OnboardingStatus] = mapped_column(Enum(OnboardingStatus), default=OnboardingStatus.ready)
     onboarding_step: Mapped[str] = mapped_column(String(32), default="idle", index=True)
     onboarding_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Soft delete: raw_events/parse_jobs CASCADE on this FK, so a hard delete would wipe history.
+    deleted_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC))
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: dt.datetime.now(dt.UTC), onupdate=lambda: dt.datetime.now(dt.UTC)

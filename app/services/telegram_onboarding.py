@@ -135,6 +135,7 @@ def onboard(
         session.flush()
 
     target.is_active = True
+    target.deleted_at = None  # re-adding a deleted channel brings it back with its history
     target.onboarding_step = "queued"
     target.onboarding_error = None
     target.onboarding_status = OnboardingStatus.needs_account

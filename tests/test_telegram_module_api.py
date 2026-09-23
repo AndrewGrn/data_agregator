@@ -237,7 +237,20 @@ def test_target_delete_soft_deletes_and_deactivates_links(client):
     assert resp.json()["is_active"] is False
     link = session.execute(select(TargetAccountLink).where(TargetAccountLink.target_id == t.id)).scalar_one()
     assert link.is_active is False
-    assert session.get(Target, t.id) is not None
+    session.refresh(t)
+    assert t.deleted_at is not None
+    assert session.get(Target, t.id) is not None, "history-bearing row is kept"
+
+    # gone from the module list and from the account's list ...
+    assert all(r["id"] != t.id for r in c.get("/api/modules/telegram").json()["targets"])
+    assert all(r["id"] != t.id for r in c.get(f"/api/modules/telegram/accounts/{acc.id}/targets").json())
+
+    # ... and pasting the same link again revives the same row instead of a duplicate
+    row = c.post("/api/modules/telegram/onboard", json={"input": "@c"}).json()
+    assert row["id"] == t.id
+    session.refresh(t)
+    assert t.deleted_at is None and t.is_active is True
+    assert any(r["id"] == t.id for r in c.get("/api/modules/telegram").json()["targets"])
 
 
 def test_account_actions_forbidden_for_non_owner(pg_session):

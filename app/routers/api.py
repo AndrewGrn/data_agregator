@@ -1287,7 +1287,7 @@ def telegram_module_data(
     user=Depends(get_current_user),
 ):
     parser_type = ParserType.telegram
-    targets_stmt = select(Target).where(Target.parser_type == parser_type)
+    targets_stmt = select(Target).where(Target.parser_type == parser_type, Target.deleted_at.is_(None))
     accounts_stmt = select(ParserAccount).where(ParserAccount.parser_type == parser_type)
     jobs_stmt = select(ParseJob).where(
         ParseJob.parser_type == parser_type,
@@ -1702,7 +1702,7 @@ def module_jobs_error_log(
 @router.get("/modules/darknet")
 def darknet_module_data(db: Session = Depends(get_db), user=Depends(get_current_user)):
     parser_type = ParserType.darknet
-    targets_stmt = select(Target).where(Target.parser_type == parser_type)
+    targets_stmt = select(Target).where(Target.parser_type == parser_type, Target.deleted_at.is_(None))
     accounts_stmt = select(ParserAccount).where(ParserAccount.parser_type == parser_type)
     jobs_stmt = select(ParseJob).where(
         ParseJob.parser_type == parser_type,
@@ -2403,7 +2403,7 @@ def telegram_account_targets(account_id: int, db: Session = Depends(get_db), use
     targets = db.execute(
         select(Target)
         .join(TargetAccountLink, TargetAccountLink.target_id == Target.id)
-        .where(TargetAccountLink.account_id == account.id, TargetAccountLink.is_active.is_(True))
+        .where(TargetAccountLink.account_id == account.id, TargetAccountLink.is_active.is_(True), Target.deleted_at.is_(None))
         .order_by(Target.name)
     ).scalars().all()
     return [_telegram_target_row(db, t) for t in targets]
@@ -2447,6 +2447,7 @@ def telegram_target_delete(target_id: int, db: Session = Depends(get_db), user=D
     # target. Deactivate instead — same shape as account disable — so history stays queryable.
     target = _ensure_target_access(db.get(Target, int(target_id)), user)
     target.is_active = False
+    target.deleted_at = dt.datetime.now(dt.UTC)
     for link in db.execute(
         select(TargetAccountLink).where(TargetAccountLink.target_id == target.id, TargetAccountLink.is_active.is_(True))
     ).scalars():
