@@ -51,7 +51,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary text-sm font-semibold text-primary-foreground">
             А
           </div>
-          <span className="hidden truncate text-sm font-semibold text-foreground sm:inline">Агрегатор Даних</span>
+          <span className="hidden truncate text-sm font-semibold text-foreground sm:inline">Watchdog</span>
         </div>
 
         <nav className="flex flex-1 flex-col gap-1">
@@ -89,7 +89,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-10 border-b border-border bg-background/95 px-4 py-3 backdrop-blur sm:px-6">
-          <h1 className="text-sm font-semibold text-foreground">{activeItem?.label ?? "Агрегатор Даних"}</h1>
+          <h1 className="text-sm font-semibold text-foreground">{activeItem?.label ?? "Watchdog"}</h1>
         </header>
         <main className="flex flex-1 flex-col gap-4 px-4 py-6 sm:px-6">{children}</main>
       </div>
